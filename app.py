@@ -1,49 +1,93 @@
 """TasteForge: Streamlit dashboard over the Steam games table in Supabase, served via the Modal app.
 Run: streamlit run app.py   (MODAL_API_URL in .streamlit/secrets.toml or the environment)
+The page re-themes itself to the games you pick (see themes.py).
 """
 import math
 import os
+import random
 import re
 
 import pandas as pd
 import requests
 import streamlit as st
 
-st.set_page_config(page_title="TasteForge - Steam Category Tracker", layout="wide")
+import themes as T
+
+st.set_page_config(page_title="TasteForge - Steam Category Tracker", page_icon="🔥", layout="wide")
 
 try:
     API_URL = st.secrets["MODAL_API_URL"]
 except Exception:
     API_URL = os.environ.get("MODAL_API_URL", "")
 
-DEMO = [("Stardew Valley", 120), ("Terraria", 90), ("Hades", 60), ("Slay the Spire", 75),
-        ("Balatro", 40), ("Hollow Knight", 35), ("Valheim", 50), ("Portal 2", 12),
-        ("Vampire Survivors", 20), ("Dave the Diver", 18)]
+# What a player can track per game. A mode is offered when the game's Steam tags say it has one.
+MODES = {"story": ("📖", "Story / Campaign"), "coop": ("🤝", "Co-op (PvE)"), "pvp": ("⚔️", "PvP")}
+STORY_T = {"story rich", "singleplayer", "choices matter", "multiple endings", "visual novel", "interactive fiction",
+           "rpg", "jrpg", "adventure", "action-adventure", "walking simulator"}
+COOP_T = {"co-op", "online co-op", "local co-op", "co-op campaign"}
+PVP_T = {"pvp", "competitive", "fighting", "2d fighter", "arena shooter", "esports", "moba", "battle royale",
+         "hero shooter"}
+MULTI_T = {"multiplayer", "massively multiplayer", "mmorpg", "local multiplayer"}
 
 CSS = """
 <style>
-:root{--bg:#0e141b;--panel:#16202b;--panel2:#1c2937;--line:#2a3b4d;--text:#e6edf3;--mute:#8fa3b8;--accent:#66c0f4;--accent2:#c6ff4d}
-.stApp{background:radial-gradient(1200px 600px at 80% -10%,#1b3350 0,transparent 60%),var(--bg)}
-section[data-testid=stSidebar]{background:var(--panel);border-right:1px solid var(--line)}
-h1.tf{margin:0;font-size:26px;letter-spacing:.5px}h1.tf span{color:var(--accent2)}
-.sub{color:var(--mute);font-size:13px}
-.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:16px;margin-bottom:12px}
-.card h2{margin:0 0 10px;font-size:13px;text-transform:uppercase;letter-spacing:1.5px;color:var(--mute)}
+.stApp{isolation:isolate;font-family:var(--body);color:var(--text)}
+[data-testid=stAppViewContainer],[data-testid=stMain],[data-testid=stHeader],[data-testid=stBottom],[data-testid=stBottom]>div{background:transparent!important}
+div[data-testid=stElementContainer]:has(.fx-host){position:absolute;width:0;height:0;overflow:visible}
+.stApp p,.stApp label,.stApp li,.stApp input,.stApp textarea,.stApp button,.stApp [data-baseweb]{font-family:var(--body)}
+.stApp h1,.stApp h2,.stApp h3,.stApp h4,.stApp h5,.stApp h6{font-family:var(--disp);letter-spacing:.05em}
+.stApp h5{text-transform:uppercase;letter-spacing:.14em;font-size:15px;color:var(--accent2)}
+section[data-testid=stSidebar]{background:var(--panel)!important;backdrop-filter:blur(10px);border-right:1px solid var(--line)}
+section[data-testid=stSidebar]>div{background:transparent!important}
+.stTabs [data-baseweb=tab] p{font-family:var(--disp);letter-spacing:.1em;text-transform:uppercase;font-size:15px}
+.stTabs [aria-selected=true] p{color:var(--accent2)}
+.stTabs [data-baseweb=tab-highlight]{background:linear-gradient(90deg,var(--accent),var(--accent2))!important;height:3px}
+.stTabs [data-baseweb=tab-border]{background:var(--line)!important}
+[data-baseweb=select]>div,[data-baseweb=base-input],[data-baseweb=input]>div,textarea{background:var(--panel2)!important;border-color:var(--line)!important}
+[data-testid=stBaseButton-primary]{background:linear-gradient(135deg,var(--accent),var(--accent2))!important;color:#140c07!important;border:0!important;font-weight:700;box-shadow:0 6px 20px -8px var(--accent)}
+[data-testid=stBaseButton-primary] p{color:#140c07!important;font-family:var(--disp);letter-spacing:.1em;text-transform:uppercase}
+[data-testid=stBaseButton-secondary]{background:var(--panel2);border:1px solid var(--line);color:var(--text)}
+[data-testid=stBaseButton-secondary]:hover{border-color:var(--accent);color:var(--accent2)}
+span[data-baseweb=tag]{background:var(--accent)!important}
+span[data-baseweb=tag] span,span[data-baseweb=tag] svg{color:#140c07!important;fill:#140c07!important}
+[data-testid=stSlider] [role=slider]{background:var(--accent2)!important;box-shadow:0 0 12px var(--accent)}
+[data-testid=stSliderThumbValue]{color:var(--accent2)!important}
+[data-testid=stExpander]{background:var(--panel);border:1px solid var(--line)!important;border-radius:12px}
+.hero{display:flex;align-items:flex-end;justify-content:space-between;gap:16px;flex-wrap:wrap;margin:0 0 4px}
+.logo{display:flex;align-items:center;gap:12px}
+.logo svg{width:50px;height:50px;color:var(--accent2);filter:drop-shadow(0 0 10px var(--accent));animation:flame 2.4s ease-in-out infinite}
+@keyframes flame{50%{transform:scale(1.07) translateY(-2px);filter:drop-shadow(0 0 18px var(--accent2))}}
+h1.tf{font-family:'Big Shoulders Display',Impact,sans-serif!important;font-weight:900;font-size:58px;letter-spacing:5px;line-height:1;margin:0;padding:0}
+h1.tf span{color:var(--accent2);text-shadow:0 0 24px var(--accent)}
+.sub{color:var(--mute);font-size:14px}
+.atmo{display:flex;gap:12px;align-items:center;padding:9px 18px 9px 14px;border:1px solid var(--line);border-radius:999px;background:var(--panel);backdrop-filter:blur(8px);box-shadow:0 8px 28px -14px var(--accent)}
+.atmo .ico{font-size:26px}
+.atmo b{display:block;font-family:var(--disp);letter-spacing:.1em;color:var(--accent2);font-size:15px}
+.atmo small{display:block;color:var(--mute);font-size:12px;max-width:340px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:16px;margin-bottom:12px;backdrop-filter:blur(6px)}
+.card h2{margin:0 0 10px;font-size:13px;text-transform:uppercase;letter-spacing:.18em;color:var(--mute)}
 .kpi{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px}
-.kpi div{flex:1;min-width:120px;background:var(--panel2);padding:10px 12px;border-radius:10px}
-.kpi b{display:block;font-size:22px;color:var(--accent2)}.kpi span{font-size:12px;color:var(--mute)}
+.kpi div{flex:1;min-width:120px;background:var(--panel);border:1px solid var(--line);padding:10px 12px;border-radius:10px;backdrop-filter:blur(6px)}
+.kpi b{display:block;font-family:var(--disp);font-size:24px;color:var(--accent2)}.kpi span{font-size:12px;color:var(--mute)}
 .bar{height:9px;border-radius:5px;background:var(--panel2);overflow:hidden}
-.bar i{display:block;height:100%;background:linear-gradient(90deg,var(--accent),var(--accent2))}
+.bar i{display:block;height:100%;background:linear-gradient(90deg,var(--ca,var(--accent)),var(--ca2,var(--accent2)));box-shadow:0 0 10px var(--ca,var(--accent))}
 .chip{display:inline-block;padding:3px 9px;border-radius:99px;font-size:12px;background:var(--panel2);border:1px solid var(--line);margin:2px 3px 2px 0}
-.chip.sel{background:var(--accent2);color:#10200a;border-color:var(--accent2)}
-.rec{display:grid;grid-template-columns:54px 1fr auto;gap:12px;align-items:center;padding:12px;background:var(--panel2);border-radius:12px;margin-bottom:9px}
+.chip.sel{background:var(--ca2,var(--accent2));color:#10130a;border-color:var(--ca2,var(--accent2))}
+.rec{display:grid;grid-template-columns:54px 1fr auto;gap:12px;align-items:center;padding:12px;background:var(--panel);border:1px solid var(--line);border-radius:12px;margin-bottom:9px;backdrop-filter:blur(6px)}
 .match{width:54px;height:54px;border-radius:50%;display:grid;place-items:center;font-weight:800;font-size:15px;color:#0a1119}
-.rec h3{margin:0;font-size:16px}.why{color:var(--mute);font-size:13px}
-.price{font-weight:700;color:var(--accent2);white-space:nowrap}
-.catcard{background:var(--panel2);border-radius:12px;padding:12px;margin-bottom:10px;border-left:4px solid var(--accent2)}
-.catcard h3{margin:0 0 4px}
-.empty{color:var(--mute);padding:28px;text-align:center;border:1px dashed var(--line);border-radius:12px}
+.rec h3{margin:0;font-size:18px}.rec .mi{font-size:13px;margin-left:8px;letter-spacing:3px}.why{color:var(--mute);font-size:13px}
+.price{font-family:var(--disp);font-weight:700;font-size:18px;color:var(--accent2);white-space:nowrap}
+.catcard{border-radius:14px;overflow:hidden;margin:4px 0 6px;background:var(--cp);border:1px solid var(--cl);box-shadow:0 14px 32px -16px var(--ca)}
+.scene{position:relative;height:100px;overflow:hidden}
+.scene::after{content:'';position:absolute;inset:0;z-index:1;background:linear-gradient(transparent 35%,rgba(0,0,0,.72))}
+.scene .ttl{position:absolute;z-index:2;left:14px;right:14px;bottom:9px}
+.scene .ttl h3{margin:0;padding:0;font-family:var(--cd);font-size:25px;line-height:1.1;color:#fff;text-shadow:0 2px 12px rgba(0,0,0,.85)}
+.scene .realm{font-family:var(--cb);font-size:11px;letter-spacing:.18em;text-transform:uppercase;color:var(--ca2)}
+.cbody{padding:12px 14px 14px;font-family:var(--cb)}
+.empty{color:var(--mute);padding:28px;text-align:center;border:1px dashed var(--line);border-radius:12px;background:var(--panel)}
 .note{font-size:12px;color:var(--mute);margin-top:12px}
+.mode{margin:12px 0 16px}.mh{display:flex;justify-content:space-between;font-size:13px;margin-bottom:4px}.mh.sm{font-size:12px;color:var(--mute);margin-top:6px}
+.todo{display:flex;justify-content:space-between;font-size:13px;padding:5px 0;border-bottom:1px dashed var(--line)}
 table.t{width:100%;border-collapse:collapse;font-size:13px}
 table.t td,table.t th{padding:6px 8px;border-bottom:1px solid var(--line);text-align:left}
 table.t th{color:var(--mute);font-weight:600;font-size:12px}
@@ -59,6 +103,14 @@ def html(s: str):
 
 def fmt(p: float) -> str:
     return "Free" if p == 0 else f"${p:.2f}"
+
+
+def modes_for(genres):
+    """Which of story / co-op / pvp this game supports, from its tags (story is the fallback)."""
+    s = {str(x).strip().lower() for x in genres}
+    coop = bool(s & COOP_T)
+    has = {"story": bool(s & STORY_T), "coop": coop, "pvp": bool(s & PVP_T or (s & MULTI_T and not coop))}
+    return [m for m in MODES if has[m]] or ["story"]
 
 
 @st.cache_data(ttl=3600)
@@ -79,8 +131,8 @@ def load_catalog() -> pd.DataFrame:
     return df.reset_index(drop=True)
 
 
-# ---------- profile math (same model as the prototype) ----------
-def profile(G, played):
+# ---------- profile math ----------
+def profile(G, played, feats):
     aff, tot, wp = {}, 0.0, 0.0
     for gid, h in played.items():
         g = G.loc[gid]
@@ -90,7 +142,12 @@ def profile(G, played):
             aff[x] = aff.get(x, 0) + h / len(g.genres)
     aff = {k: v / (tot or 1) for k, v in aff.items()}
     lp = wp / tot if tot else 0
-    return dict(tot=tot, aff=aff, lp=lp, avg_price=math.exp(lp) - 1, n=len(played))
+    # play style: a game's hours are split across its ticked modes by their time share
+    modes = {}
+    for gid, h in played.items():
+        for m, share in (feats.get(gid) or {}).items():
+            modes[m] = modes.get(m, 0) + h * share
+    return dict(tot=tot, aff=aff, lp=lp, avg_price=math.exp(lp) - 1, n=len(played), modes=modes)
 
 
 def recommend(G, P, played, w_genre, budget, focus_genres):
@@ -99,15 +156,18 @@ def recommend(G, P, played, w_genre, budget, focus_genres):
         pool = pool[pool.genres.apply(lambda gs: any(x in focus_genres for x in gs))]
     max_a = max(P["aff"].values(), default=0.0001)
     w_g = w_genre / 100
+    th = sum(P["modes"].values())
+    share = {m: v / th for m, v in P["modes"].items()} if th else {}
     rows = []
     for gid, g in pool.iterrows():
         gm = sum(P["aff"].get(x, 0) for x in g.genres) / len(g.genres) / max_a
         d = math.log1p(g.price) - P["lp"]
         pm = math.exp(-(d * d) / (2 * 1.1 * 1.1))
         q = (g.rating - 70) / 30
-        score = max(0, min(1, (w_g * gm + (1 - w_g) * pm) * 0.9 + q * 0.1))
+        mf = min(1, sum(share.get(m, 0) for m in modes_for(g.genres))) if share else .5
+        score = max(0, min(1, (w_g * gm + (1 - w_g) * pm) * 0.8 + q * 0.1 + mf * 0.1))
         best = max(g.genres, key=lambda x: P["aff"].get(x, 0))
-        rows.append((score, gm, pm, best, g))
+        rows.append((score, gm, pm, best, g, mf))
     return sorted(rows, key=lambda r: -r[0])
 
 
@@ -118,10 +178,11 @@ def radar(entries):
         a = -math.pi / 2 + i * 2 * math.pi / n
         return cx + math.cos(a) * r, cy + math.sin(a) * r
 
+    line = 'style="fill:none;stroke:var(--line)"'
     web = "".join(
-        f'<polygon points="{" ".join("%.1f,%.1f" % pt(i, R * f) for i in range(n))}" fill="none" stroke="#2a3b4d"/>'
+        f'<polygon points="{" ".join("%.1f,%.1f" % pt(i, R * f) for i in range(n))}" {line}/>'
         for f in (.25, .5, .75, 1))
-    axes = "".join(f'<line x1="{cx}" y1="{cy}" x2="{pt(i, R)[0]:.1f}" y2="{pt(i, R)[1]:.1f}" stroke="#2a3b4d"/>' for i in range(n))
+    axes = "".join(f'<line x1="{cx}" y1="{cy}" x2="{pt(i, R)[0]:.1f}" y2="{pt(i, R)[1]:.1f}" {line}/>' for i in range(n))
     mx = entries[0][1]
     poly = " ".join("%.1f,%.1f" % pt(i, R * max(.08, e[1] / mx)) for i, e in enumerate(entries))
     labs = ""
@@ -129,40 +190,46 @@ def radar(entries):
         x, y = pt(i, R + 18)
         anchor = "end" if x < cx - 5 else "start" if x > cx + 5 else "middle"
         labs += f'<text x="{x:.1f}" y="{y:.1f}" text-anchor="{anchor}" dominant-baseline="middle">{e[0]}</text>'
-    return (f'<svg viewBox="0 0 340 300" width="100%">{web}{axes}<polygon points="{poly}" '
-            f'fill="rgba(102,192,244,.35)" stroke="#66c0f4" stroke-width="2"/>{labs}</svg>')
+    return (f'<svg viewBox="-40 0 420 300" width="100%">{web}{axes}<polygon points="{poly}" '
+            f'style="fill:var(--accent);fill-opacity:.3;stroke:var(--accent);stroke-width:2"/>{labs}</svg>')
 
 
 def bar(pct):
     return f'<div class="bar"><i style="width:{pct:.0f}%"></i></div>'
 
 
-# ---------- page ----------
-st.markdown(CSS, unsafe_allow_html=True)
-html("""<h1 class="tf">TASTE<span>FORGE</span></h1>
-<div class="sub">Pick games you've played, and the app builds your Player Profile from genre and price habits,
-lets you forge your own custom categories, then recommends what to play next.</div>""")
+def world_card(title, genres, body, key=None):
+    """Category card: a small animated world built from the category's genres, with `body` underneath."""
+    key = key or T.theme_for(genres)
+    return (f'<div class="catcard" style="{T.card_vars(key)}">{T.scene_html(key, title)}'
+            f'<div class="cbody">{body}</div></div>')
 
+
+# ---------- page ----------
 if not API_URL:
+    html(CSS + T.theme_css(T.DEFAULT) + T.fx_html(T.DEFAULT))
     st.error("Set MODAL_API_URL (your deployed Modal endpoint URL) in .streamlit/secrets.toml.")
     st.stop()
 
-G = load_catalog()
+with st.spinner("Heating the forge..."):
+    G = load_catalog()
 ss = st.session_state
 ss.setdefault("picked", [])
 ss.setdefault("cats", [{"name": "Cozy Grind", "genres": ["Cozy", "Farming Sim", "Simulation"]}])
 
 
 def load_demo():
-    picks, hours = [], {}
-    for name, h in DEMO:
-        m = G[G.name.str.lower() == name.lower()]
-        if len(m):
-            picks.append(m.iloc[0].label)
-            hours[m.iloc[0].label] = h
+    """A fresh random profile every click: random games, hours, modes and time split."""
+    picks = []
+    for gid in random.sample(range(len(G)), random.randint(4, 10)):
+        lab = G.loc[gid].label
+        picks.append(lab)
+        ss[f"h_{lab}"] = int(random.choice([random.randint(2, 30), random.randint(20, 150), random.randint(100, 600)]))
+        have = modes_for(G.loc[gid].genres)
+        for mode in MODES:
+            ss[f"m_{lab}_{mode}"] = mode in have
+            ss[f"s_{lab}_{mode}"] = random.randint(10, 90)
     ss.picked = picks
-    for lab, h in hours.items():
-        ss[f"h_{lab}"] = h
 
 
 with st.sidebar:
@@ -172,17 +239,52 @@ with st.sidebar:
     c1, c2 = st.columns([3, 1])
     c1.button("Load demo profile", type="primary", on_click=load_demo, use_container_width=True)
     c2.button("Clear", on_click=lambda: ss.update(picked=[]), use_container_width=True)
-    played = {}
+    played, feats = {}, {}
     for lab in ss.picked:
         gid = int(G.index[G.label == lab][0])
         ss.setdefault(f"h_{lab}", 20)
-        h = st.number_input(lab.rsplit("  (", 1)[0], min_value=1, max_value=9999, key=f"h_{lab}")
-        played[gid] = h
-    st.caption("Tick a game and enter your hours. In the full app this list would come from the Steam Web API "
-               "(GetOwnedGames) after a Steam login.")
+        with st.expander(lab.rsplit("  (", 1)[0]):
+            played[gid] = st.number_input("Hours played", min_value=1, max_value=9999, key=f"h_{lab}")
+            have = modes_for(G.loc[gid].genres)
+            for mode in MODES:
+                ss.setdefault(f"m_{lab}_{mode}", mode in have)
+            on = [m for m in MODES if ss[f"m_{lab}_{m}"]]
+            solo = len(on) == 1  # the only mode played is all of the time played
+            raw = {}
+            for mode, (ic, name) in MODES.items():
+                if not st.checkbox(f"{ic} {name}", key=f"m_{lab}_{mode}"):
+                    continue
+                if solo:
+                    ss[f"s_{lab}_{mode}"] = 100
+                else:
+                    ss.setdefault(f"s_{lab}_{mode}", 50)
+                raw[mode] = st.slider("Share of hours", 0, 100, key=f"s_{lab}_{mode}", format="%d%%", disabled=solo,
+                                      help="Locked at 100% while this is the only mode ticked." if solo else
+                                      "What percentage of your hours on this game went into this mode.")
+            tot = sum(raw.values())
+            feats[gid] = {m: s / tot if tot else 1 / len(raw) for m, s in raw.items()}
+    st.caption("Open a game to set its hours, which modes you play (story, co-op, PvP) and what percentage of your "
+               "hours went into each (locked to 100% when only one is ticked). Modes are pre-ticked from the game's "
+               "Steam tags. In the full app this list would come from the Steam Web API (GetOwnedGames) after a "
+               "Steam login.")
 
-P = profile(G, played)
-html(f'<div class="sub" style="text-align:right">Live data · {len(G):,} well-reviewed Steam games from Supabase</div>')
+P = profile(G, played, feats)
+
+# ---- the world is fixed by the chosen games (hours-weighted)
+world, drivers = T.theme_for_library([
+    (G.loc[g]["name"], G.loc[g].genres, h) for g, h in played.items()])
+cat_worlds = {T.theme_for(c["genres"]) for c in ss.cats} | {T.theme_for(ss.get("new_picks", []))}
+html(CSS + T.theme_css(world, cat_worlds) + T.fx_html(world))
+
+tw = T.THEMES[world]
+why = f"Shaped by {', '.join(drivers)}" if drivers else "Pick some games and the whole world will change"
+html(f"""<div class="hero"><div><div class="logo"><svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M12 2c.6 3.6 4.6 5.4 4.6 10.2A4.6 4.6 0 0 1 12 17a4.6 4.6 0 0 1-4.6-4.8c0-1.9.9-3.1 1.9-4 .1 1.7.9 2.6 1.9 2.8C10.9 8 11.2 5 12 2z"/><rect x="5" y="19" width="14" height="3" rx="1" fill="currentColor" opacity=".7"/></svg>
+<h1 class="tf">TASTE<span>FORGE</span></h1></div>
+<div class="sub">Pick games you've played and the app builds your Player Profile from genre, price and play-style habits,
+lets you forge your own custom categories, then recommends what to play next.</div></div>
+<div class="atmo"><span class="ico">{tw['icon']}</span><div><b>{tw['name']}</b><small>{tw['tag']} {why}.</small></div></div></div>""")
+html(f'<div class="sub" style="text-align:right;margin:4px 0 6px">Live data · {len(G):,} well-reviewed Steam games from Supabase</div>')
+
 tabs = st.tabs(["Player Profile", "Recommendations", "Custom Categories", "Genre Success"])
 NEED = '<div class="empty">Add some games on the left (or hit <b>Load demo profile</b>) to build your Player Profile.</div>'
 
@@ -203,7 +305,8 @@ with tabs[0]:
         html(f"""<div class="kpi"><div><b>{P['n']}</b><span>games tracked</span></div>
         <div><b>{round(P['tot'])}h</b><span>total hours</span></div>
         <div><b>{fmt(round(ap, 2))}</b><span>hour-weighted price</span></div>
-        <div><b style="font-size:15px">{arche}</b><span>your archetype</span></div></div>""")
+        <div><b>{MODES[max(P['modes'], key=P['modes'].get)][1].split(' ')[0] if P['modes'] else '—'}</b><span>main mode</span></div>
+        <div><b style="font-size:16px">{arche}</b><span>your archetype</span></div></div>""")
         a, b = st.columns(2)
         with a:
             html(f'<div class="card"><h2>Genre radar</h2>{radar(rad)}</div>')
@@ -215,6 +318,25 @@ with tabs[0]:
                 f'<div style="display:grid;grid-template-columns:90px 1fr 44px;gap:8px;align-items:center;font-size:13px;margin:5px 0">'
                 f'<span>{l}</span>{bar(h / mx * 100)}<span>{round(h)}h</span></div>' for l, h in pb)
             html(f'<div class="card"><h2>Where your hours go</h2>{hours}<h2 style="margin-top:18px">Price comfort zone</h2>{price}</div>')
+
+        # play style: how hours split across story / co-op / pvp
+        th = sum(P["modes"].values())
+        rows = ""
+        for m, (ic, name) in MODES.items():
+            hrs = P["modes"].get(m)
+            if hrs and th:
+                rows += (f'<div class="mode"><div class="mh"><span>{ic} {name}</span>'
+                         f'<span>{round(hrs)}h · {round(hrs / th * 100)}% of your time</span></div>{bar(hrs / th * 100)}</div>')
+        big = sorted(played.items(), key=lambda kv: -kv[1])[:5]
+        big_html = "".join(
+            f'<div class="todo"><span>{G.loc[g]["name"]}</span><span>{h}h · '
+            + " ".join(f'{MODES[m][0]} {round(s * 100)}%' for m, s in feats[g].items()) + '</span></div>' for g, h in big)
+        c, d = st.columns(2)
+        with c:
+            html(f'<div class="card"><h2>Play style</h2>{rows or "<div class=why>Tick a mode on a game to see this.</div>"}</div>')
+        with d:
+            html(f'<div class="card"><h2>Your biggest games</h2>{big_html}'
+                 f'<div class="note">Hours and how each game\'s time splits between story, co-op and PvP.</div></div>')
 
 # ----- Recommendations -----
 with tabs[1]:
@@ -230,29 +352,44 @@ with tabs[1]:
         R = recommend(G, P, played, w, 999 if budget >= 60 else budget, fg)[:8]
         if not R:
             html('<div class="empty">Nothing matches those filters. Raise the budget or change the focus category.</div>')
-        for score, gm, pm, best, g in R:
+        top_mode = max(P["modes"], key=P["modes"].get) if P["modes"] else None
+        for score, gm, pm, best, g, mf in R:
+            gw = T.THEMES[T.theme_for(g.genres)]
+            gmodes = modes_for(g.genres)
+            icons = gw["icon"] + "  " + " ".join(MODES[m][0] for m in gmodes)
             chips = "".join(f'<span class="chip {"sel" if x in P["aff"] else ""}">{x}</span>' for x in g.genres)
-            html(f"""<div class="rec"><div class="match" style="background:hsl({round(score * 120)},80%,60%)">{round(score * 100)}%</div>
-            <div><h3>{g['name']}</h3><div>{chips}</div>
-            <div class="why">Genre fit {round(gm * 100)}% (you play lots of <b>{best}</b>) · price fit {round(pm * 100)}% · {g.rating:.0f}% positive</div></div>
+            fit = f" · fits your {MODES[top_mode][1]} play" if top_mode in gmodes else ""
+            html(f"""<div class="rec" style="border-left:4px solid {gw['c']['accent']}"><div class="match" style="background:hsl({round(score * 120)},80%,60%)">{round(score * 100)}%</div>
+            <div><h3>{g['name']}<span class="mi" title="{gw['name']}">{icons}</span></h3><div>{chips}</div>
+            <div class="why">Genre fit {round(gm * 100)}% (you play lots of <b>{best}</b>) · price fit {round(pm * 100)}% · {g.rating:.0f}% positive{fit}</div></div>
             <div class="price">{fmt(g.price)}</div></div>""")
 
 # ----- Custom Categories -----
 with tabs[2]:
     all_genres = sorted({x for gs in G.genres for x in gs})
+
+    def create_cat():
+        n, p = ss.new_name.strip(), ss.new_picks
+        if n and p:
+            ss.cats.append({"name": n, "genres": list(p)})
+            realm = T.THEMES[T.theme_for(p)]
+            st.toast(f"{n} forged. Welcome to {realm['name']}.", icon=realm["icon"])
+            ss.new_name, ss.new_picks = "", []
+        else:
+            st.toast("Give it a name and pick at least one genre.", icon="⚠️")
+
     a, b = st.columns(2)
     with a:
         st.markdown("##### FORGE A CATEGORY")
-        name = st.text_input("Name it", placeholder="e.g. 'Rage Quit Club'")
-        picks = st.multiselect("Genres / tags", all_genres)
-        if st.button("Create category", type="primary"):
-            if name.strip() and picks:
-                ss.cats.append({"name": name.strip(), "genres": picks})
-                st.rerun()
-            else:
-                st.warning("Give it a name and pick at least one genre.")
+        name = st.text_input("Name it", placeholder="e.g. 'Rage Quit Club'", key="new_name")
+        picks = st.multiselect("Genres / tags", all_genres, key="new_picks")
+        st.button("Create category", type="primary", on_click=create_cat)
+        if picks:
+            html(world_card(name.strip() or "Your new category", picks,
+                            '<div class="why">Live preview. This is the world your category will live in; '
+                            'it is built from the genres you pick.</div>'))
         html('<div class="note">Steam\'s built-in tags are broad. Combine genres into your own buckets, then track how much of '
-             'your playtime each one owns and use them as a recommendation filter.</div>')
+             'your playtime each one owns and use them as a recommendation filter. Every category gets a world of its own.</div>')
     with b:
         st.markdown("##### YOUR CATEGORIES")
         for i, c in enumerate(ss.cats):
@@ -264,11 +401,10 @@ with tabs[2]:
             chips = "".join(f'<span class="chip sel">{x}</span>' for x in c["genres"])
             txt = f"<b>{share}%</b> of your playtime ({round(hrs)}h across {len(hit)} games)" if P["tot"] else "Add games to see your playtime share"
             tu = " · ".join(f"{r['name']} ({fmt(r.price)})" for _, r in un.iterrows()) or "none"
-            html(f'<div class="catcard"><h3>{c["name"]}</h3><div>{chips}</div><div class="why" style="margin:6px 0">{txt}</div>'
-                 f'{bar(share)}<div class="why" style="margin-top:8px">Top unplayed: {tu}</div></div>')
-            if st.button("Delete", key=f"del{i}"):
-                ss.cats.pop(i)
-                st.rerun()
+            html(world_card(c["name"], c["genres"],
+                            f'<div>{chips}</div><div class="why" style="margin:6px 0">{txt}</div>'
+                            f'{bar(share)}<div class="why" style="margin-top:8px">Top unplayed: {tu}</div>'))
+            st.button("Delete", key=f"del{i}", on_click=lambda i=i: ss.cats.pop(i))
 
 # ----- Genre Success -----
 with tabs[3]:
