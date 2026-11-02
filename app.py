@@ -11,6 +11,7 @@ import pandas as pd
 import requests
 import streamlit as st
 
+import game_detail as gd
 import themes as T
 
 st.set_page_config(page_title="TasteForge - Steam Category Tracker", page_icon="🔥", layout="wide")
@@ -60,10 +61,6 @@ span[data-baseweb=tag] span,span[data-baseweb=tag] svg{color:#140c07!important;f
 h1.tf{font-family:'Big Shoulders Display',Impact,sans-serif!important;font-weight:900;font-size:58px;letter-spacing:5px;line-height:1;margin:0;padding:0}
 h1.tf span{color:var(--accent2);text-shadow:0 0 24px var(--accent)}
 .sub{color:var(--mute);font-size:14px}
-.atmo{display:flex;gap:12px;align-items:center;padding:9px 18px 9px 14px;border:1px solid var(--line);border-radius:999px;background:var(--panel);backdrop-filter:blur(8px);box-shadow:0 8px 28px -14px var(--accent)}
-.atmo .ico{font-size:26px}
-.atmo b{display:block;font-family:var(--disp);letter-spacing:.1em;color:var(--accent2);font-size:15px}
-.atmo small{display:block;color:var(--mute);font-size:12px;max-width:340px}
 .card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:16px;margin-bottom:12px;backdrop-filter:blur(6px)}
 .card h2{margin:0 0 10px;font-size:13px;text-transform:uppercase;letter-spacing:.18em;color:var(--mute)}
 .kpi{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px}
@@ -73,7 +70,11 @@ h1.tf span{color:var(--accent2);text-shadow:0 0 24px var(--accent)}
 .bar i{display:block;height:100%;background:linear-gradient(90deg,var(--ca,var(--accent)),var(--ca2,var(--accent2)));box-shadow:0 0 10px var(--ca,var(--accent))}
 .chip{display:inline-block;padding:3px 9px;border-radius:99px;font-size:12px;background:var(--panel2);border:1px solid var(--line);margin:2px 3px 2px 0}
 .chip.sel{background:var(--ca2,var(--accent2));color:#10130a;border-color:var(--ca2,var(--accent2))}
-.rec{display:grid;grid-template-columns:54px 1fr auto;gap:12px;align-items:center;padding:12px;background:var(--panel);border:1px solid var(--line);border-radius:12px;margin-bottom:9px;backdrop-filter:blur(6px)}
+.rec{display:grid;grid-template-columns:54px 1fr auto;gap:12px;align-items:center;padding:12px;background:var(--panel);border:1px solid var(--line);border-radius:12px 12px 0 0;margin-bottom:0;backdrop-filter:blur(6px)}
+[class*="st-key-view_"]{margin:-14px 0 8px}
+[class*="st-key-view_"] button{border-radius:0 0 12px 12px;background:var(--panel2);border:1px solid var(--line);border-top:0;min-height:34px}
+[class*="st-key-view_"] button:hover{border-color:var(--accent)}
+[class*="st-key-view_"] button p{font-size:13px;color:var(--accent2);letter-spacing:.04em}
 .match{width:54px;height:54px;border-radius:50%;display:grid;place-items:center;font-weight:800;font-size:15px;color:#0a1119}
 .rec h3{margin:0;font-size:18px}.rec .mi{font-size:13px;margin-left:8px;letter-spacing:3px}.why{color:var(--mute);font-size:13px}
 .price{font-family:var(--disp);font-weight:700;font-size:18px;color:var(--accent2);white-space:nowrap}
@@ -216,6 +217,16 @@ with st.spinner("Heating the forge..."):
 ss = st.session_state
 ss.setdefault("picked", [])
 ss.setdefault("cats", [{"name": "Cozy Grind", "genres": ["Cozy", "Farming Sim", "Simulation"]}])
+ss.setdefault("view", None)  # app_id of the game whose stats page is open
+ss.setdefault("view_why", None)
+
+
+def open_game(app_id, why):
+    ss.view, ss.view_why = app_id, why
+
+
+def close_game():
+    ss.view = ss.view_why = None
 
 
 def load_demo():
@@ -273,16 +284,15 @@ P = profile(G, played, feats)
 # ---- the world is fixed by the chosen games (hours-weighted)
 world, drivers = T.theme_for_library([
     (G.loc[g]["name"], G.loc[g].genres, h) for g, h in played.items()])
+if ss.view and gd.has(ss.view):  # a game's stats page takes on that game's own world
+    world, drivers = T.theme_for(gd.tags_of(ss.view)), [gd.name_of(ss.view)]
 cat_worlds = {T.theme_for(c["genres"]) for c in ss.cats} | {T.theme_for(ss.get("new_picks", []))}
 html(CSS + T.theme_css(world, cat_worlds) + T.fx_html(world))
 
-tw = T.THEMES[world]
-why = f"Shaped by {', '.join(drivers)}" if drivers else "Pick some games and the whole world will change"
-html(f"""<div class="hero"><div><div class="logo"><svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M12 2c.6 3.6 4.6 5.4 4.6 10.2A4.6 4.6 0 0 1 12 17a4.6 4.6 0 0 1-4.6-4.8c0-1.9.9-3.1 1.9-4 .1 1.7.9 2.6 1.9 2.8C10.9 8 11.2 5 12 2z"/><rect x="5" y="19" width="14" height="3" rx="1" fill="currentColor" opacity=".7"/></svg>
+html("""<div class="hero"><div><div class="logo"><svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M12 2c.6 3.6 4.6 5.4 4.6 10.2A4.6 4.6 0 0 1 12 17a4.6 4.6 0 0 1-4.6-4.8c0-1.9.9-3.1 1.9-4 .1 1.7.9 2.6 1.9 2.8C10.9 8 11.2 5 12 2z"/><rect x="5" y="19" width="14" height="3" rx="1" fill="currentColor" opacity=".7"/></svg>
 <h1 class="tf">TASTE<span>FORGE</span></h1></div>
 <div class="sub">Pick games you've played and the app builds your Player Profile from genre, price and play-style habits,
-lets you forge your own custom categories, then recommends what to play next.</div></div>
-<div class="atmo"><span class="ico">{tw['icon']}</span><div><b>{tw['name']}</b><small>{tw['tag']} {why}.</small></div></div></div>""")
+lets you forge your own custom categories, then recommends what to play next.</div></div></div>""")
 html(f'<div class="sub" style="text-align:right;margin:4px 0 6px">Live data · {len(G):,} well-reviewed Steam games from Supabase</div>')
 
 tabs = st.tabs(["Player Profile", "Recommendations", "Custom Categories", "Genre Success"])
@@ -340,7 +350,9 @@ with tabs[0]:
 
 # ----- Recommendations -----
 with tabs[1]:
-    if not played:
+    if ss.view:
+        gd.show(ss.view, ss.view_why, close_game)
+    elif not played:
         html(NEED)
     else:
         st.markdown("##### TUNE THE RECOMMENDER")
@@ -363,6 +375,8 @@ with tabs[1]:
             <div><h3>{g['name']}<span class="mi" title="{gw['name']}">{icons}</span></h3><div>{chips}</div>
             <div class="why">Genre fit {round(gm * 100)}% (you play lots of <b>{best}</b>) · price fit {round(pm * 100)}% · {g.rating:.0f}% positive{fit}</div></div>
             <div class="price">{fmt(g.price)}</div></div>""")
+            st.button(f"📊  See full stats for {g['name']}  →", key=f"view_{int(g.app_id)}", use_container_width=True,
+                      on_click=open_game, args=(int(g.app_id), dict(score=score, gm=gm, pm=pm, mf=mf, best=best)))
 
 # ----- Custom Categories -----
 with tabs[2]:
