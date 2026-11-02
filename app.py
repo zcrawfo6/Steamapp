@@ -11,14 +11,24 @@ import pandas as pd
 import requests
 import streamlit as st
 
+import steam_import as S
 import themes as T
 
 st.set_page_config(page_title="TasteForge - Steam Category Tracker", page_icon="🔥", layout="wide")
 
-try:
-    API_URL = st.secrets["MODAL_API_URL"]
-except Exception:
-    API_URL = os.environ.get("MODAL_API_URL", "")
+
+def setting(name: str) -> str:
+    try:
+        return st.secrets[name]
+    except Exception:
+        return os.environ.get(name, "")
+
+
+API_URL = setting("MODAL_API_URL")
+STEAM_KEY = setting("STEAM_API_KEY")
+# Where Steam sends people back after signing in: this app's own address
+APP_URL = setting("APP_URL") or "http://localhost:8501/"
+STEAM_MAX = 40  # most-played games to import, so the sidebar stays usable for big libraries
 
 # What a player can track per game. A mode is offered when the game's Steam tags say it has one.
 MODES = {"story": ("📖", "Story / Campaign"), "coop": ("🤝", "Co-op (PvE)"), "pvp": ("⚔️", "PvP")}
@@ -232,7 +242,94 @@ def load_demo():
     ss.picked = picks
 
 
+def reset_game_state(lab):
+    """Forget a game's mode ticks / time split so they re-default from its Steam tags."""
+    for mode in MODES:
+        ss.pop(f"m_{lab}_{mode}", None)
+        ss.pop(f"s_{lab}_{mode}", None)
+
+
+def import_steam(sid=None):
+    """Replace the played list with the profile's most-played games that are in the catalog.
+    Uses the signed-in Steam ID if given, otherwise whatever is typed in the profile box."""
+    ss.steam_msg = None
+    try:
+        sid = sid or S.resolve_steamid(STEAM_KEY, ss.get("steam_user", ""))
+        games = S.owned_games(STEAM_KEY, sid)
+    except S.SteamError as e:
+        ss.steam_msg = ("error", str(e))
+        return
+    except requests.RequestException as e:
+        ss.steam_msg = ("error", f"Couldn't reach the Steam API: {e}")
+        return
+    played_games = sorted((g for g in games if g["hours"] > 0), key=lambda g: -g["hours"])
+    by_app = dict(zip(G.app_id.astype(int), G.label))
+    matched = [(by_app[g["appid"]], g["hours"]) for g in played_games if g["appid"] in by_app]
+    if not matched:
+        ss.steam_msg = ("warning", f"Found {len(games)} owned games ({len(played_games)} played), but none of the "
+                                   "played ones are in the catalog yet.")
+        return
+    picks = []
+    for lab, h in matched[:STEAM_MAX]:
+        picks.append(lab)
+        ss[f"h_{lab}"] = max(1, min(9999, round(h)))
+        reset_game_state(lab)
+    ss.picked = picks
+    skipped = len(played_games) - len(matched)
+    msg = f"Imported {len(picks)} games from {len(played_games)} played"
+    if len(matched) > STEAM_MAX:
+        msg += f" (your top {STEAM_MAX} by hours)"
+    if skipped:
+        msg += f"; {skipped} {'wasn' if skipped == 1 else 'weren'}'t in the catalog"
+    ss.steam_msg = ("success", msg + ". Adjust hours and modes below.")
+
+
+def steam_sign_out():
+    ss.pop("steam_id", None)
+    ss.pop("steam_name", None)
+    ss.steam_msg = None
+
+
+# Steam's sign-in page redirects back here with openid.* query params: verify them and import right away.
+# This must run before the sidebar widgets are drawn, because it fills the played-games list.
+if STEAM_KEY and "openid.mode" in st.query_params:
+    reply = st.query_params.to_dict()
+    st.query_params.clear()  # so a refresh doesn't re-submit the (one-time) reply
+    try:
+        ss.steam_id = S.verify_login(reply, APP_URL)
+        ss.steam_name = S.player_name(STEAM_KEY, ss.steam_id)
+        import_steam(ss.steam_id)
+    except S.SteamError as e:
+        ss.steam_msg = ("error", str(e))
+    except requests.RequestException as e:
+        ss.steam_msg = ("error", f"Couldn't reach Steam to confirm the sign-in: {e}")
+
 with st.sidebar:
+    st.markdown("##### 0 · IMPORT FROM STEAM")
+    if STEAM_KEY:
+        if ss.get("steam_id"):
+            st.markdown(f"Signed in as **{ss.steam_name}**")
+            c1, c2 = st.columns([3, 1])
+            c1.button("Re-import my games", type="primary", on_click=import_steam, args=(ss.steam_id,),
+                      use_container_width=True)
+            c2.button("Sign out", on_click=steam_sign_out, use_container_width=True)
+        else:
+            # plain link with target=_self so Steam returns to this tab (st.link_button opens a new one)
+            st.markdown(f'<a href="{S.login_url(APP_URL)}" target="_self" class="steam-login">'
+                        '<img src="https://community.fastly.steamstatic.com/public/images/signinthroughsteam/sits_01.png" '
+                        'alt="Sign in through Steam"></a>', unsafe_allow_html=True)
+            with st.expander("Or enter a profile instead"):
+                st.text_input("Steam profile", key="steam_user",
+                              placeholder="Custom URL name, profile URL or SteamID64", label_visibility="collapsed")
+                st.button("Import played games", on_click=import_steam, use_container_width=True)
+        msg = ss.get("steam_msg")
+        if msg:
+            getattr(st, msg[0])(msg[1])
+        st.caption("Your Steam profile and its Game details must be set to Public. Only played games that are in "
+                   "the catalog are imported, with their lifetime hours.")
+    else:
+        st.info("Add STEAM_API_KEY to .streamlit/secrets.toml to import your games from Steam. "
+                "Get a key at steamcommunity.com/dev/apikey.")
     st.markdown("##### 1 · YOUR PLAYED GAMES")
     st.multiselect("Search games", G.label.tolist(), key="picked", label_visibility="collapsed",
                    placeholder="Search games...")
@@ -265,8 +362,7 @@ with st.sidebar:
             feats[gid] = {m: s / tot if tot else 1 / len(raw) for m, s in raw.items()}
     st.caption("Open a game to set its hours, which modes you play (story, co-op, PvP) and what percentage of your "
                "hours went into each (locked to 100% when only one is ticked). Modes are pre-ticked from the game's "
-               "Steam tags. In the full app this list would come from the Steam Web API (GetOwnedGames) after a "
-               "Steam login.")
+               "Steam tags. Use Import from Steam above to fill this list from your Steam library.")
 
 P = profile(G, played, feats)
 

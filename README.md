@@ -9,7 +9,15 @@ Kaggle Steam games CSV -> `upload_to_supabase.py` -> Supabase `games` table -> `
 1. `git clone https://github.com/zcrawfo6/Steamapp.git` and `cd Steamapp`
 2. `pip install -r requirements.txt`
 3. Create `.streamlit/secrets.toml` containing: `MODAL_API_URL = "https://zcrawfo6--steam-games-api-query.us-east.modal.run"`
-4. `streamlit run app.py`
+4. Optional, for **Import from Steam**: get a Steam Web API key at https://steamcommunity.com/dev/apikey and add `STEAM_API_KEY = "..."` to the same `secrets.toml`
+5. `streamlit run app.py`
+
+## Import from Steam
+Click **Sign in through Steam** in the sidebar. Steam's own login page (OpenID) sends you back with your Steam ID, which the app verifies with Steam, then it pulls your library with `GetOwnedGames` (`steam_import.py`) and loads your most-played games that are in the catalog (up to 40) with their lifetime hours. The app never sees your Steam password. Your profile's "Game details" must be public.
+
+As a fallback you can type a custom URL name, profile URL, or SteamID64 instead (resolved with `ResolveVanityURL`).
+
+If the app runs anywhere other than `http://localhost:8501/`, set `APP_URL = "https://your-app-address/"` in `secrets.toml` so Steam redirects back to the right place.
 
 ## Rebuild the data / backend (only if needed)
 - `games_slim.csv` (31 MB, cleaned from the Kaggle Steam games dataset: merged "Discount"/"DLC count" header fixed, large text columns dropped) is included in the repo.
