@@ -17,6 +17,9 @@ Click **Sign in through Steam** in the sidebar. Steam's own login page (OpenID) 
 
 As a fallback you can type a custom URL name, profile URL, or SteamID64 instead (resolved with `ResolveVanityURL`).
 
+## Compare with another player
+The **Compare** tab loads another player's library (pick from your Steam friends when signed in, or type their profile) and shows a taste-match score, games you both play, genre shares side by side, each other's favorites the other hasn't played, and both players' recommendations, flagging picks you'd both get. Their "Game details" must be public; picking from friends also needs your friends list to be public.
+
 If the app runs anywhere other than `http://localhost:8501/`, set `APP_URL = "https://your-app-address/"` in `secrets.toml` so Steam redirects back to the right place.
 
 ## Rebuild the data / backend (only if needed)

@@ -45,12 +45,32 @@ def verify_login(params: dict, return_to: str) -> str:
     return m.group(1)
 
 
+def player_names(key: str, steamids: list[str]) -> dict[str, str]:
+    """Current display names for up to 100 accounts per call ({steamid: name})."""
+    out = {}
+    for i in range(0, len(steamids), 100):
+        r = requests.get(f"{API}/ISteamUser/GetPlayerSummaries/v2/", timeout=20,
+                         params={"key": key, "steamids": ",".join(steamids[i:i + 100])})
+        r.raise_for_status()
+        out |= {p["steamid"]: p.get("personaname", p["steamid"]) for p in r.json().get("response", {}).get("players", [])}
+    return out
+
+
 def player_name(key: str, steamid: str) -> str:
     """The account's current display name (falls back to the ID)."""
-    r = requests.get(f"{API}/ISteamUser/GetPlayerSummaries/v2/", params={"key": key, "steamids": steamid}, timeout=20)
+    return player_names(key, [steamid]).get(steamid, steamid)
+
+
+def friends(key: str, steamid: str) -> list[tuple[str, str]]:
+    """The account's Steam friends as (steamid, name), sorted by name. Needs a public friends list."""
+    r = requests.get(f"{API}/ISteamUser/GetFriendList/v1/", timeout=20,
+                     params={"key": key, "steamid": steamid, "relationship": "friend"})
+    if r.status_code == 401:
+        raise SteamError("Your Steam friends list is private, so it can't be shown. Enter their profile instead.")
     r.raise_for_status()
-    players = r.json().get("response", {}).get("players", [])
-    return players[0].get("personaname", steamid) if players else steamid
+    ids = [f["steamid"] for f in r.json().get("friendslist", {}).get("friends", [])]
+    names = player_names(key, ids) if ids else {}
+    return sorted(((i, names.get(i, i)) for i in ids), key=lambda f: f[1].lower())
 
 
 class SteamError(Exception):

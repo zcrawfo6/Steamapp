@@ -249,6 +249,57 @@ def reset_game_state(lab):
         ss.pop(f"s_{lab}_{mode}", None)
 
 
+def catalog_matches(games):
+    """Split a Steam library into its played games (most hours first) and the (catalog row, hours) ones we know."""
+    played_games = sorted((g for g in games if g["hours"] > 0), key=lambda g: -g["hours"])
+    by_app = dict(zip(G.app_id.astype(int), G.index))
+    return played_games, [(int(by_app[g["appid"]]), g["hours"]) for g in played_games if g["appid"] in by_app]
+
+
+def default_feats(gid):
+    """Mode split when we only know hours (other players): even across the modes the game's tags suggest."""
+    have = modes_for(G.loc[gid].genres)
+    return {m: 1 / len(have) for m in have}
+
+
+def load_rival(source):
+    """Fetch another player's library for the Compare tab, from the friends dropdown or the typed profile."""
+    ss.rival_msg = None
+    try:
+        if source == "friend":
+            sid = ss.get("rival_pick")
+            if not sid:
+                raise S.SteamError("Pick a friend first.")
+        else:
+            sid = S.resolve_steamid(STEAM_KEY, ss.get("rival_user", ""))
+        if sid == ss.get("steam_id"):
+            raise S.SteamError("That's you. Pick someone else to compare with.")
+        games = S.owned_games(STEAM_KEY, sid)
+        name = S.player_name(STEAM_KEY, sid)
+    except S.SteamError as e:
+        ss.rival_msg = str(e)
+        return
+    except requests.RequestException as e:
+        ss.rival_msg = f"Couldn't reach the Steam API: {e}"
+        return
+    played_games, matched = catalog_matches(games)
+    if not matched:
+        ss.rival_msg = f"{name} has {len(played_games)} played games, but none are in the catalog yet."
+        return
+    ss.rival = dict(sid=sid, name=name, played={gid: max(1, round(h)) for gid, h in matched[:STEAM_MAX]},
+                    n_played=len(played_games), n_owned=len(games))
+
+
+def load_friends():
+    try:
+        ss.friends = S.friends(STEAM_KEY, ss.steam_id)
+        ss.friends_msg = None if ss.friends else "Your friends list is empty."
+    except S.SteamError as e:
+        ss.friends, ss.friends_msg = [], str(e)
+    except requests.RequestException as e:
+        ss.friends, ss.friends_msg = [], f"Couldn't reach the Steam API: {e}"
+
+
 def import_steam(sid=None):
     """Replace the played list with the profile's most-played games that are in the catalog.
     Uses the signed-in Steam ID if given, otherwise whatever is typed in the profile box."""
@@ -262,15 +313,14 @@ def import_steam(sid=None):
     except requests.RequestException as e:
         ss.steam_msg = ("error", f"Couldn't reach the Steam API: {e}")
         return
-    played_games = sorted((g for g in games if g["hours"] > 0), key=lambda g: -g["hours"])
-    by_app = dict(zip(G.app_id.astype(int), G.label))
-    matched = [(by_app[g["appid"]], g["hours"]) for g in played_games if g["appid"] in by_app]
+    played_games, matched = catalog_matches(games)
     if not matched:
         ss.steam_msg = ("warning", f"Found {len(games)} owned games ({len(played_games)} played), but none of the "
                                    "played ones are in the catalog yet.")
         return
     picks = []
-    for lab, h in matched[:STEAM_MAX]:
+    for gid, h in matched[:STEAM_MAX]:
+        lab = G.loc[gid].label
         picks.append(lab)
         ss[f"h_{lab}"] = max(1, min(9999, round(h)))
         reset_game_state(lab)
@@ -285,8 +335,8 @@ def import_steam(sid=None):
 
 
 def steam_sign_out():
-    ss.pop("steam_id", None)
-    ss.pop("steam_name", None)
+    for k in ("steam_id", "steam_name", "friends", "friends_msg"):
+        ss.pop(k, None)
     ss.steam_msg = None
 
 
@@ -381,7 +431,7 @@ lets you forge your own custom categories, then recommends what to play next.</d
 <div class="atmo"><span class="ico">{tw['icon']}</span><div><b>{tw['name']}</b><small>{tw['tag']} {why}.</small></div></div></div>""")
 html(f'<div class="sub" style="text-align:right;margin:4px 0 6px">Live data · {len(G):,} well-reviewed Steam games from Supabase</div>')
 
-tabs = st.tabs(["Player Profile", "Recommendations", "Custom Categories", "Genre Success"])
+tabs = st.tabs(["Player Profile", "Recommendations", "Custom Categories", "Genre Success", "Compare"])
 NEED = '<div class="empty">Add some games on the left (or hit <b>Load demo profile</b>) to build your Player Profile.</div>'
 
 # ----- Player Profile -----
@@ -517,3 +567,117 @@ with tabs[3]:
     <div class="why" style="margin-bottom:10px">Success Index = avg. positive-review % (above a 70% baseline) × log of combined owners,
     computed over every game in the database with 50+ reviews.</div>
     <table class="t"><tr><th>Genre</th><th>Games</th><th>Avg rating</th><th>Avg price</th><th style="width:38%">Success index</th></tr>{rows}</table></div>""")
+
+
+# ----- Compare -----
+YOU_C, THEM_C = "var(--accent)", "#b48cff"
+
+
+def two_bar(you, them):
+    """Your bar over theirs, both scaled 0-100."""
+    return (f'<div class="bar" style="margin-bottom:3px"><i style="width:{you:.0f}%"></i></div>'
+            f'<div class="bar"><i style="width:{them:.0f}%;--ca:{THEM_C};--ca2:#d6c2ff"></i></div>')
+
+
+def taste_match(a, b):
+    """Cosine similarity of two genre-affinity profiles, 0-1."""
+    dot = sum(v * b.get(k, 0) for k, v in a.items())
+    na, nb = math.sqrt(sum(v * v for v in a.values())), math.sqrt(sum(v * v for v in b.values()))
+    return dot / (na * nb) if na and nb else 0
+
+
+def rec_list(rows, other_ids, who):
+    out = ""
+    for score, gm, pm, best, g, mf in rows:
+        both = g.name in other_ids
+        tag = '<span class="chip sel">for both of you</span>' if both else ""
+        out += (f'<div class="todo"><span>{g["name"]} {tag}</span>'
+                f'<span>{round(score * 100)}% · {fmt(g.price)}</span></div>')
+    return f'<div class="card"><h2>{who}</h2>{out or "<div class=why>No recommendations.</div>"}</div>'
+
+
+def fav_list(title, src, other, n=6):
+    rows = [(g, h) for g, h in sorted(src.items(), key=lambda kv: -kv[1]) if g not in other][:n]
+    body = "".join(f'<div class="todo"><span>{G.loc[g]["name"]}</span><span>{h}h · {fmt(G.loc[g].price)}</span></div>'
+                   for g, h in rows)
+    return f'<div class="card"><h2>{title}</h2>{body or "<div class=why>Nothing here: you have the same favorites.</div>"}</div>'
+
+
+with tabs[4]:
+    if not STEAM_KEY:
+        st.info("Add STEAM_API_KEY to .streamlit/secrets.toml to compare libraries with other Steam players.")
+    else:
+        st.markdown("##### COMPARE WITH ANOTHER PLAYER")
+        a, b = st.columns(2)
+        with a:
+            if ss.get("steam_id"):
+                if "friends" not in ss:
+                    load_friends()
+                if ss.friends:
+                    names = dict(ss.friends)
+                    st.selectbox("Your Steam friends", list(names), key="rival_pick", format_func=names.get,
+                                 index=None, placeholder="Pick a friend...")
+                    st.button("Compare with friend", type="primary", on_click=load_rival, args=("friend",))
+                else:
+                    st.caption(ss.friends_msg)
+            else:
+                st.caption("Sign in through Steam (sidebar) to pick from your friends list.")
+        with b:
+            st.text_input("Their Steam profile", key="rival_user",
+                          placeholder="Custom URL name, profile URL or SteamID64")
+            st.button("Compare with this profile", on_click=load_rival, args=("typed",))
+        if ss.get("rival_msg"):
+            st.error(ss.rival_msg)
+
+        rv = ss.get("rival")
+        if not rv:
+            html('<div class="empty">Pick a friend or enter someone\'s Steam profile to compare your libraries and '
+                 'recommendations. Their profile\'s Game details must be public.</div>')
+        elif not played:
+            html(NEED)
+        else:
+            them = rv["played"]
+            P2 = profile(G, them, {g: default_feats(g) for g in them})
+            shared = [g for g in played if g in them]
+            match = taste_match(P["aff"], P2["aff"])
+            html(f"""<div class="kpi"><div><b>{round(match * 100)}%</b><span>taste match (genre profile)</span></div>
+            <div><b>{len(shared)}</b><span>games you both play</span></div>
+            <div><b>{P['n']} · {round(P['tot'])}h</b><span>you: games · hours</span></div>
+            <div><b style="color:{THEM_C}">{P2['n']} · {round(P2['tot'])}h</b><span>{rv['name']}: games · hours</span></div></div>""")
+            legend = (f'<div class="why" style="margin-bottom:8px"><b style="color:var(--accent2)">■ You</b> &nbsp; '
+                      f'<b style="color:{THEM_C}">■ {rv["name"]}</b></div>')
+            c, d = st.columns(2)
+            with c:
+                top = sorted(set(P["aff"]) | set(P2["aff"]), key=lambda k: -(P["aff"].get(k, 0) + P2["aff"].get(k, 0)))[:8]
+                mx = max([P["aff"].get(k, 0) for k in top] + [P2["aff"].get(k, 0) for k in top] + [1e-9])
+                rows = "".join(
+                    f'<div style="margin:8px 0"><div class="mh"><span>{k}</span><span>{round(P["aff"].get(k, 0) * 100)}% · '
+                    f'{round(P2["aff"].get(k, 0) * 100)}%</span></div>'
+                    f'{two_bar(P["aff"].get(k, 0) / mx * 100, P2["aff"].get(k, 0) / mx * 100)}</div>' for k in top)
+                html(f'<div class="card"><h2>Genres: share of hours</h2>{legend}{rows}</div>')
+            with d:
+                if shared:
+                    hm = max(max(played[g], them[g]) for g in shared)
+                    body = "".join(
+                        f'<div style="margin:8px 0"><div class="mh"><span>{G.loc[g]["name"]}</span>'
+                        f'<span>{played[g]}h · {them[g]}h</span></div>{two_bar(played[g] / hm * 100, them[g] / hm * 100)}</div>'
+                        for g in sorted(shared, key=lambda g: -(played[g] + them[g]))[:10])
+                else:
+                    body = '<div class="why">No games in common (among each library\'s most-played).</div>'
+                html(f'<div class="card"><h2>Games you both play</h2>{legend}{body}</div>')
+            c, d = st.columns(2)
+            with c:
+                html(fav_list(f"{rv['name']}'s favorites you haven't played", them, played))
+            with d:
+                html(fav_list(f"Your favorites {rv['name']} hasn't played", played, them))
+            mine = recommend(G, P, played, 70, 999, None)[:8]
+            theirs = recommend(G, P2, them, 70, 999, None)[:8]
+            mine_ids, their_ids = {r[4].name for r in mine}, {r[4].name for r in theirs}
+            c, d = st.columns(2)
+            with c:
+                html(rec_list(mine, their_ids, "Recommended for you"))
+            with d:
+                html(rec_list(theirs, mine_ids, f"Recommended for {rv['name']}"))
+            html(f'<div class="note">{rv["name"]}: {rv["n_played"]} played of {rv["n_owned"]} owned; compared on their '
+                 f'top {len(them)} catalog games by hours. Recommendations use the default 70% genre / 30% price mix and '
+                 f'no budget limit.</div>')
