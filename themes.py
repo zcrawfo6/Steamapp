@@ -53,19 +53,35 @@ THEMES = {
              "box-shadow:0 0 60px 16px rgba(240,200,120,.18);opacity:.75}"),
     "cyber": dict(
         name="Neon Sprawl", icon="🌃", tag="Neon rain. Chrome nerves. Static in the sky.",
-        disp="'Orbitron',sans-serif", body="'Rajdhani',sans-serif",
-        c=dict(bg="#07050f", panel="rgba(14,10,32,.8)", panel2="rgba(28,18,58,.9)", line="#3a2a7a",
-               text="#e8f3ff", mute="#8f9bd6", accent="#00e5ff", accent2="#ff2bd6"),
-        bg="radial-gradient(900px 500px at 15% -10%,rgba(255,43,214,.22),transparent 60%),"
-           "radial-gradient(900px 500px at 90% 10%,rgba(0,229,255,.18),transparent 60%)",
-        ov="repeating-linear-gradient(0deg,rgba(0,229,255,.045) 0 1px,transparent 1px 4px),"
-           "linear-gradient(180deg,transparent 70%,rgba(255,43,214,.12))",
-        grad="linear-gradient(180deg,#1a0838,#5c1670)", sil="#06030f", skyk="neon",
-        part=("rain", "#5ff3ff", 46),
+        disp="'Chakra Petch','Rajdhani',sans-serif", body="'Rajdhani',sans-serif",
+        c=dict(bg="#05060f", panel="rgba(10,12,30,.82)", panel2="rgba(22,22,52,.9)", line="#2c2f6e",
+               text="#e6f1ff", mute="#8a96cf", accent="#19d3ff", accent2="#ff3fb8"),
+        bg="radial-gradient(1000px 520px at 20% -10%,rgba(255,63,184,.16),transparent 60%),"
+           "radial-gradient(900px 500px at 90% 0%,rgba(25,211,255,.14),transparent 60%),"
+           "linear-gradient(180deg,#05060f 0%,#0b0a22 55%,#1a0c30 100%)",
+        # no CRT scanlines (that was the arcade look): a smoggy horizon glow and a vignette instead
+        ov="radial-gradient(ellipse 80% 40% at 50% 100%,rgba(255,63,184,.22),transparent 70%),"
+           "linear-gradient(180deg,transparent 55%,rgba(25,211,255,.07)),"
+           "radial-gradient(ellipse at center,transparent 55%,rgba(0,0,0,.5) 100%)",
+        grad="linear-gradient(180deg,#0b0a22,#4a1466)", sil="#04040c", skyk="neon",
+        part=("rain", "#8fe8ff", 60),
         tags={"cyberpunk": 3, "robots": 1.5, "mechs": 1.2, "immersive sim": 1, "futuristic": 2,
               "transhumanism": 2, "hacking": 2, "sci-fi": 0.8},
-        deco=".fx .deco{right:10vw;top:12vh;width:16vw;max-width:240px;aspect-ratio:1;border-radius:50%;"
-             "background:linear-gradient(#ff2bd6,#00e5ff);opacity:.18}"),
+        # tall megacity skyline, faint searchlight beams, and two flying-car light streaks crossing the sky
+        deco=".fx .sky{height:46vh}.fx .deco{inset:0;"
+             "background:linear-gradient(104deg,transparent 30%,rgba(25,211,255,.07) 31%,transparent 36%),"
+             "linear-gradient(76deg,transparent 64%,rgba(255,63,184,.06) 65%,transparent 70%)}"
+             ".fx .deco::before,.fx .deco::after{content:'';position:absolute;top:22vh;left:-12%;width:70px;height:3px;"
+             "border-radius:3px;background:linear-gradient(90deg,transparent,#fff,#ff3fb8);"
+             "box-shadow:0 0 12px 3px rgba(255,63,184,.7);animation:carpass 14s linear infinite}"
+             ".fx .deco::after{top:31vh;width:46px;background:linear-gradient(90deg,transparent,#fff,#19d3ff);"
+             "box-shadow:0 0 12px 3px rgba(25,211,255,.7);animation-duration:21s;animation-delay:-8s;"
+             "animation-direction:reverse}@keyframes carpass{from{left:-12%}to{left:112%}}"
+             # type two notches smaller for this theme only, in the main area (not the sidebar, which stays fixed)
+             "[data-testid=stMain] :is(p,li,label){font-size:.875rem}.stApp .sub{font-size:12px}.stApp .why,.stApp .mh,.stApp .todo,.stApp table.t{font-size:11px}"
+             ".stApp .mh.sm,.stApp .kpi span,.stApp .chip,.stApp .note{font-size:10px}.stApp .card h2{font-size:11px}"
+             ".stApp .rec h3,.stApp .price{font-size:16px}.stApp .kpi b{font-size:22px}"
+             ".stApp h5{font-size:13px}.stTabs [data-baseweb=tab] p{font-size:13px}"),
     "space": dict(
         name="Deep Void", icon="🪐", tag="Silence, starlight and a long way from home.",
         disp="'Audiowide',sans-serif", body="'Exo 2',sans-serif",
@@ -281,6 +297,57 @@ def _city(fill, wins, seed, density=.5, maxh=170, broken=False, antenna=False):
     return o
 
 
+def _megacity(fill, a, a2, seed=21):
+    """Cyberpunk skyline in three depth layers: hazy far towers, lit mid towers with neon signs,
+    and dark foreground towers with billboards and red aircraft lights; a horizon glow sits behind them."""
+    r = random.Random(seed)
+    lit = ["#ffd9a0", "#ffd9a0", "#ffd9a0", a, a2]
+    o = (f'<defs><linearGradient id="hz" x1="0" y1="1" x2="0" y2="0"><stop offset="0" stop-color="{a2}" stop-opacity=".5"/>'
+         f'<stop offset=".6" stop-color="{a2}" stop-opacity=".1"/><stop offset="1" stop-color="{a2}" stop-opacity="0"/>'
+         '</linearGradient></defs><rect x="0" y="0" width="1200" height="200" fill="url(#hz)"/>')
+    x = -10  # far layer: tall, pale and hazy
+    while x < 1200:
+        w, h = r.randint(18, 44), r.randint(100, 192)
+        o += f'<rect x="{x}" y="{200 - h}" width="{w}" height="{h}" fill="#3a2a78" opacity=".5"/>'
+        if r.random() < .3:
+            o += f'<rect x="{x + w // 2}" y="{200 - h - 22}" width="2" height="22" fill="#3a2a78" opacity=".5"/>'
+        x += w + r.randint(2, 10)
+    x = 0  # mid layer: lit windows, setbacks, vertical neon signs
+    while x < 1200:
+        w, h = r.randint(30, 66), r.randint(70, 165)
+        y = 200 - h
+        o += f'<rect x="{x}" y="{y}" width="{w}" height="{h}" fill="#110a2e"/>'
+        if r.random() < .4:
+            o += f'<rect x="{x + w * .2:.0f}" y="{y - 14}" width="{w * .6:.0f}" height="15" fill="#110a2e"/>'
+        if r.random() < .2:
+            o += (f'<rect x="{x + w - 6}" y="{y + 8}" width="3" height="{r.randint(24, 48)}" '
+                  f'fill="{r.choice([a, a2])}" opacity=".95"/>')
+        for wy in range(y + 8, 196, 9):
+            for wx in range(x + 5, x + w - 6, 7):
+                if r.random() < .22:
+                    o += f'<rect x="{wx}" y="{wy}" width="3" height="5" fill="{r.choice(lit)}" opacity=".8"/>'
+        x += w + r.randint(-4, 8)
+    x = r.randint(-30, 20)  # near layer: big dark towers with gaps so the mid layer shows through
+    while x < 1200:
+        w, h = r.randint(70, 130), r.randint(95, 175)
+        y = 200 - h
+        o += f'<rect x="{x}" y="{y}" width="{w}" height="{h}" fill="{fill}"/>'
+        ax = x + int(w * .3)
+        o += f'<rect x="{ax}" y="{y - 24}" width="2" height="24" fill="{fill}"/><circle cx="{ax + 1}" cy="{y - 26}" r="2" fill="#ff3355"/>'
+        if r.random() < .5:
+            bw, bh = r.randint(22, 40), r.randint(16, 26)
+            bx, by = x + r.randint(6, max(7, w - bw - 6)), y + r.randint(14, 40)
+            c = r.choice([a, a2])
+            o += (f'<rect x="{bx}" y="{by}" width="{bw}" height="{bh}" fill="{c}" opacity=".9"/>'
+                  f'<rect x="{bx + 3}" y="{by + 3}" width="{bw - 6}" height="{bh - 6}" fill="{fill}" opacity=".35"/>')
+        for wy in range(y + 12, 196, 11):
+            for wx in range(x + 8, x + w - 8, 9):
+                if r.random() < .07:
+                    o += f'<rect x="{wx}" y="{wy}" width="3" height="5" fill="{r.choice(lit)}" opacity=".85"/>'
+        x += w + r.randint(25, 70)
+    return o
+
+
 def _ground(x):
     return 150 + 25 * math.sin(x / 170) + 14 * math.sin(x / 57)
 
@@ -365,7 +432,7 @@ def _sky_svg(key):
     inner = {
         "castle": lambda: _castle(f, "#ffb347"),
         "foundry": lambda: _city(f, ["#ff8a3d"], 5, density=.12, maxh=120, antenna=True),
-        "neon": lambda: _city(f, [a, a2, "#7a5cff"], 21, density=.45, antenna=True),
+        "neon": lambda: _megacity(f, a, a2),
         "noir": lambda: _city(f, ["#e5c07b"], 33, density=.12),
         "ruins": lambda: _city(f, None, 9, broken=True, maxh=140),
         "tombs": lambda: _tombs(f),
