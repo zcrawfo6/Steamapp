@@ -1,20 +1,31 @@
-"""TasteForge: Streamlit dashboard over the Steam games table in Supabase, served via the Modal app.
-Run: streamlit run app.py   (MODAL_API_URL in .streamlit/secrets.toml or the environment)
-The page re-themes itself to the games you pick (see themes.py).
+"""TasteForge: Streamlit dashboard over the Steam games tables in Supabase.
+Run: streamlit run app.py
+Settings (.streamlit/secrets.toml or the environment):
+  GAMES_SUPABASE_URL + GAMES_SUPABASE_KEY  full Steam catalog (`games` table, see games_db.py) for the recommender
+  MODAL_API_URL      Modal API: the Genre Success tab, and the old 3,000-game catalog when the two above are unset
+  GAMES_MIN_REVIEWS  catalog floor, default 10 (below that Steam shows no rating to score a game on)
+Layout: a centered search-first page over a dimmed game-shelf backdrop, with Steam import and a Simple / Advanced
+mode switch in the top right. Category cards and game pages get an animated world built from their tags (themes.py).
 """
 import math
 import os
 import random
 import re
+from concurrent.futures import ThreadPoolExecutor
+from html import escape
 
+import numpy as np
 import pandas as pd
 import requests
 import streamlit as st
 
+import game_detail as gd
+import games_db as db
 import steam_import as S
 import themes as T
 
-st.set_page_config(page_title="TasteForge - Steam Category Tracker", page_icon="🔥", layout="wide")
+st.set_page_config(page_title="TasteForge · Find what to play next", page_icon="🎮", layout="wide",
+                   initial_sidebar_state="collapsed")
 
 
 def setting(name: str) -> str:
@@ -25,10 +36,14 @@ def setting(name: str) -> str:
 
 
 API_URL = setting("MODAL_API_URL")
+GAMES_URL = str(setting("GAMES_SUPABASE_URL")).strip()
+GAMES_KEY = str(setting("GAMES_SUPABASE_KEY")).strip()
+FULL_CATALOG = bool(GAMES_URL and GAMES_KEY)
+MIN_REVIEWS = int(setting("GAMES_MIN_REVIEWS") or 10)
 STEAM_KEY = setting("STEAM_API_KEY")
 # Where Steam sends people back after signing in: this app's own address
 APP_URL = setting("APP_URL") or "http://localhost:8501/"
-STEAM_MAX = 40  # most-played games to import, so the sidebar stays usable for big libraries
+MIN_HOURS = 2.5  # games with fewer hours stay in the library (never recommended) but don't shape the taste profile
 
 # What a player can track per game. A mode is offered when the game's Steam tags say it has one.
 MODES = {"story": ("📖", "Story / Campaign"), "coop": ("🤝", "Co-op (PvE)"), "pvp": ("⚔️", "PvP")}
@@ -41,69 +56,147 @@ MULTI_T = {"multiplayer", "massively multiplayer", "mmorpg", "local multiplayer"
 
 CSS = """
 <style>
-.stApp{isolation:isolate;font-family:var(--body);color:var(--text)}
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+:root{--bg:#05101c;--panel:rgba(15,28,41,.88);--panel2:#172533;--field:#0f1c29;--line:#2d3640;--line2:#3b5060;
+--text:#e2f1fa;--mute:#94a9ba;--accent:#38bdf8;--accent2:#b8e6fe;--btn:#1b374a;--btnh:#24485f;--ink:#dff2fe;
+--disp:'Inter',system-ui,sans-serif;--body:'Inter',system-ui,sans-serif}
+.stApp{isolation:isolate;font-family:var(--body);color:var(--text);background:var(--bg)}
 [data-testid=stAppViewContainer],[data-testid=stMain],[data-testid=stHeader],[data-testid=stBottom],[data-testid=stBottom]>div{background:transparent!important}
+[data-testid=stMainBlockContainer]{max-width:1060px;padding-top:4.4rem;padding-bottom:4rem}
 div[data-testid=stElementContainer]:has(.fx-host){position:absolute;width:0;height:0;overflow:visible}
 .stApp p,.stApp label,.stApp li,.stApp input,.stApp textarea,.stApp button,.stApp [data-baseweb]{font-family:var(--body)}
-.stApp h1,.stApp h2,.stApp h3,.stApp h4,.stApp h5,.stApp h6{font-family:var(--disp);letter-spacing:.05em}
-.stApp h5{text-transform:uppercase;letter-spacing:.14em;font-size:15px;color:var(--accent2)}
-section[data-testid=stSidebar]{background:var(--panel)!important;backdrop-filter:blur(10px);border-right:1px solid var(--line)}
-section[data-testid=stSidebar]>div{background:transparent!important}
-.stTabs [data-baseweb=tab] p{font-family:var(--disp);letter-spacing:.1em;text-transform:uppercase;font-size:15px}
-.stTabs [aria-selected=true] p{color:var(--accent2)}
-.stTabs [data-baseweb=tab-highlight]{background:linear-gradient(90deg,var(--accent),var(--accent2))!important;height:3px}
-.stTabs [data-baseweb=tab-border]{background:var(--line)!important}
-[data-baseweb=select]>div,[data-baseweb=base-input],[data-baseweb=input]>div,textarea{background:var(--panel2)!important;border-color:var(--line)!important}
-[data-testid=stBaseButton-primary]{background:linear-gradient(135deg,var(--accent),var(--accent2))!important;color:#140c07!important;border:0!important;font-weight:700;box-shadow:0 6px 20px -8px var(--accent)}
-[data-testid=stBaseButton-primary] p{color:#140c07!important;font-family:var(--disp);letter-spacing:.1em;text-transform:uppercase}
-[data-testid=stBaseButton-secondary]{background:var(--panel2);border:1px solid var(--line);color:var(--text)}
-[data-testid=stBaseButton-secondary]:hover{border-color:var(--accent);color:var(--accent2)}
-span[data-baseweb=tag]{background:var(--accent)!important}
-span[data-baseweb=tag] span,span[data-baseweb=tag] svg{color:#140c07!important;fill:#140c07!important}
-[data-testid=stSlider] [role=slider]{background:var(--accent2)!important;box-shadow:0 0 12px var(--accent)}
+.stApp h1,.stApp h2,.stApp h3,.stApp h4,.stApp h5,.stApp h6{font-family:var(--disp)}
+.stApp h5{text-transform:uppercase;letter-spacing:.12em;font-size:13px;font-weight:600;color:var(--mute)}
+.stApp a{color:var(--accent2)}
+/* backdrop: shelves of game cases, blurred and dimmed */
+.shelves{position:fixed;inset:-12px;z-index:-1;pointer-events:none;background-size:auto 100%;background-repeat:repeat-x;filter:blur(1.5px) saturate(.85)}
+.shelves::after{content:'';position:absolute;inset:0;background:radial-gradient(ellipse 75% 65% at 50% 38%,rgba(5,16,28,.58),rgba(5,16,28,.92))}
+/* top bar */
+.brand{display:flex;align-items:center;gap:10px;font-size:17px;font-weight:500;color:#fff}
+.brand b{font-weight:800}.brand svg{width:34px;height:auto}
+.st-key-topbar [data-testid=stPopover] button,[data-testid=stBaseButton-secondary]{background:rgba(23,37,51,.92)!important;border:1px solid var(--line2)!important;color:var(--ink)!important;border-radius:999px}
+.st-key-topbar [data-testid=stPopover] button:hover,[data-testid=stBaseButton-secondary]:hover{border-color:var(--accent)!important;color:#fff!important}
+.st-key-topbar [data-testid=stPopover]:last-child button{background:var(--btn)!important;border-color:#2f5670!important}
+[data-testid=stPopoverBody]{background:var(--field);border:1px solid var(--line);border-radius:16px}
+/* hero */
+.hero{text-align:center;margin:7vh auto 26px;max-width:780px}
+.hero .ttl{display:inline-flex;align-items:center;gap:16px;flex-wrap:wrap;justify-content:center}
+.hero .ttl svg{width:70px;height:auto;margin-top:14px}
+.hero h1{font-size:clamp(34px,6vw,62px);font-weight:800;letter-spacing:-.02em;line-height:1.05;margin:0;padding:0;color:#fff;text-shadow:0 2px 24px rgba(0,0,0,.6)}
+.hero p{font-size:clamp(15px,2vw,18px);color:#d5e6f2;line-height:1.6;max-width:560px;margin:14px auto 0}
+.st-key-heromid{max-width:720px;width:100%;margin:0 auto}
+.st-key-search [data-testid=stMultiSelect] [role=group]{min-height:60px;border:1px solid var(--line)!important;border-radius:16px!important;padding-left:38px;
+background:var(--field) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='18' height='18' fill='none' stroke='%2394a9ba' stroke-width='2' stroke-linecap='round'%3E%3Ccircle cx='8' cy='8' r='6'/%3E%3Cpath d='m13 13 4 4'/%3E%3C/svg%3E") no-repeat 18px center!important;
+box-shadow:0 20px 52px rgba(0,0,0,.32)}
+.st-key-search input::placeholder{color:var(--mute)}
+.st-key-why [data-testid=stExpander] details{background:transparent!important;border:0!important}
+.st-key-why summary{width:fit-content;margin:0 auto}
+.st-key-why summary p{text-decoration:underline;text-underline-offset:5px;color:#d5e6f2;font-size:15px}
+.st-key-why [data-testid=stExpanderDetails]{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:16px 20px;backdrop-filter:blur(8px)}
+.src{text-align:center;color:var(--mute);font-size:12px;margin:2px 0 6vh}
+/* inputs, buttons */
+[data-testid=stMultiSelect] [role=group],[data-baseweb=select]>div,[data-baseweb=base-input],[data-baseweb=input]>div,textarea{background:var(--field)!important;border-color:var(--line)!important;border-radius:12px!important}
+span[data-baseweb=tag],span[data-tag]{background:var(--btn)!important;border:1px solid #2f5670;border-radius:99px!important}
+span[data-baseweb=tag] span,span[data-baseweb=tag] svg,span[data-tag] *{color:var(--ink)!important;fill:var(--ink)!important}
+[data-testid=stBaseButton-primary]{background:var(--btn)!important;color:var(--ink)!important;border:1px solid #2f5670!important;border-radius:14px;font-weight:600}
+[data-testid=stBaseButton-primary]:hover{background:var(--btnh)!important;border-color:var(--accent)!important}
+[data-testid=stBaseButton-primary] p{color:var(--ink)!important}
+[data-testid=stSlider] [role=slider]{background:var(--accent2)!important}
 [data-testid=stSliderThumbValue]{color:var(--accent2)!important}
-[data-testid=stExpander]{background:var(--panel);border:1px solid var(--line)!important;border-radius:12px}
-.hero{display:flex;align-items:flex-end;justify-content:space-between;gap:16px;flex-wrap:wrap;margin:0 0 4px}
-.logo{display:flex;align-items:center;gap:12px}
-.logo svg{width:50px;height:50px;color:var(--accent2);filter:drop-shadow(0 0 10px var(--accent));animation:flame 2.4s ease-in-out infinite}
-@keyframes flame{50%{transform:scale(1.07) translateY(-2px);filter:drop-shadow(0 0 18px var(--accent2))}}
-h1.tf{font-family:'Big Shoulders Display',Impact,sans-serif!important;font-weight:900;font-size:58px;letter-spacing:5px;line-height:1;margin:0;padding:0}
-h1.tf span{color:var(--accent2);text-shadow:0 0 24px var(--accent)}
-.sub{color:var(--mute);font-size:14px}
-.atmo{display:flex;gap:12px;align-items:center;padding:9px 18px 9px 14px;border:1px solid var(--line);border-radius:999px;background:var(--panel);backdrop-filter:blur(8px);box-shadow:0 8px 28px -14px var(--accent)}
-.atmo .ico{font-size:26px}
-.atmo b{display:block;font-family:var(--disp);letter-spacing:.1em;color:var(--accent2);font-size:15px}
-.atmo small{display:block;color:var(--mute);font-size:12px;max-width:340px}
-.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:16px;margin-bottom:12px;backdrop-filter:blur(6px)}
-.card h2{margin:0 0 10px;font-size:13px;text-transform:uppercase;letter-spacing:.18em;color:var(--mute)}
+[data-testid=stExpander] details{background:var(--panel);border:1px solid var(--line)!important;border-radius:14px;backdrop-filter:blur(8px)}
+/* tabs as a centred pill bar */
+.stTabs [role=tablist]{gap:4px;width:fit-content;max-width:100%;overflow-x:auto;margin:0 auto 22px;padding:5px;background:rgba(15,28,41,.88);border:1px solid var(--line)!important;border-radius:999px;backdrop-filter:blur(8px);box-shadow:none!important}
+.stTabs .react-aria-SelectionIndicator,.stTabs [role=tablist]::before,.stTabs [role=tablist]::after,.stTabs [role=tab]::before,.stTabs [role=tab]::after{display:none!important}
+.stTabs [role=tab]{height:auto;padding:8px 16px;border-radius:999px;background:transparent;border:0!important;box-shadow:none!important;white-space:nowrap}
+.stTabs [role=tab] p{font-size:14px;font-weight:600;color:var(--mute)}
+.stTabs [role=tab]:hover p{color:var(--ink)}
+.stTabs [role=tab][aria-selected=true]{background:var(--btn)}
+.stTabs [role=tab][aria-selected=true] p{color:var(--ink)}
+/* panels */
+.st-key-tune,.st-key-mygames{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:16px 18px;backdrop-filter:blur(8px)}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:18px;margin-bottom:12px;backdrop-filter:blur(8px);box-shadow:0 20px 52px -28px rgba(0,0,0,.7)}
+.card h2{margin:0 0 10px;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.14em;color:var(--mute)}
 .kpi{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px}
-.kpi div{flex:1;min-width:120px;background:var(--panel);border:1px solid var(--line);padding:10px 12px;border-radius:10px;backdrop-filter:blur(6px)}
-.kpi b{display:block;font-family:var(--disp);font-size:24px;color:var(--accent2)}.kpi span{font-size:12px;color:var(--mute)}
-.bar{height:9px;border-radius:5px;background:var(--panel2);overflow:hidden}
-.bar i{display:block;height:100%;background:linear-gradient(90deg,var(--ca,var(--accent)),var(--ca2,var(--accent2)));box-shadow:0 0 10px var(--ca,var(--accent))}
-.chip{display:inline-block;padding:3px 9px;border-radius:99px;font-size:12px;background:var(--panel2);border:1px solid var(--line);margin:2px 3px 2px 0}
-.chip.sel{background:var(--ca2,var(--accent2));color:#10130a;border-color:var(--ca2,var(--accent2))}
-.rec{display:grid;grid-template-columns:54px 1fr auto;gap:12px;align-items:center;padding:12px;background:var(--panel);border:1px solid var(--line);border-radius:12px;margin-bottom:9px;backdrop-filter:blur(6px)}
-.match{width:54px;height:54px;border-radius:50%;display:grid;place-items:center;font-weight:800;font-size:15px;color:#0a1119}
-.rec h3{margin:0;font-size:18px}.rec .mi{font-size:13px;margin-left:8px;letter-spacing:3px}.why{color:var(--mute);font-size:13px}
-.price{font-family:var(--disp);font-weight:700;font-size:18px;color:var(--accent2);white-space:nowrap}
-.catcard{border-radius:14px;overflow:hidden;margin:4px 0 6px;background:var(--cp);border:1px solid var(--cl);box-shadow:0 14px 32px -16px var(--ca)}
+.kpi div{flex:1;min-width:120px;background:var(--panel);border:1px solid var(--line);padding:12px 14px;border-radius:14px;backdrop-filter:blur(8px)}
+.kpi b{display:block;font-size:24px;font-weight:700;color:#fff}.kpi span{font-size:12px;color:var(--mute)}
+.bar{height:8px;border-radius:5px;background:rgba(23,37,51,.95);overflow:hidden}
+.bar i{display:block;height:100%;border-radius:5px;background:linear-gradient(90deg,var(--ca,#2b7fb0),var(--ca2,var(--accent2)))}
+.chip{display:inline-block;padding:3px 10px;border-radius:99px;font-size:12px;background:rgba(23,37,51,.9);border:1px solid var(--line2);color:var(--text);margin:2px 3px 2px 0}
+.chip.sel{background:var(--btn);color:var(--ink);border-color:#2f5670}
+.catcard .chip.sel{background:var(--ca2);color:#10130a;border-color:var(--ca2)}
+.hint{color:var(--mute);font-size:13px;text-align:center;margin:-6px 0 16px}
+/* recommendation list: results header, cards with a match receipt, inline analysis, taste shaping */
+.rhead{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;padding:12px 16px;margin-bottom:14px;background:var(--panel);border:1px solid var(--line);border-radius:16px;backdrop-filter:blur(8px)}
+.rhead .t{font-size:13px;font-weight:600;color:var(--text)}.rhead .n{font-size:15px;font-weight:700;color:#fff}
+.lbl{font-size:11px;letter-spacing:.16em;text-transform:uppercase;color:var(--mute)}
+.rhead .lbl span{margin-left:8px;padding:3px 9px;border:1px solid #2f5670;border-radius:6px;background:var(--btn);color:var(--accent);letter-spacing:0;text-transform:none;font-size:13px}
+.rec{padding:12px;background:var(--panel);border:1px solid var(--line);border-radius:16px 16px 0 0;backdrop-filter:blur(8px)}
+.rec .top{display:grid;grid-template-columns:150px 1fr auto;gap:14px;align-items:start}
+.rec .cap{width:150px;aspect-ratio:460/215;border-radius:10px;background:#0b1520 center/cover no-repeat;border:1px solid var(--line)}
+.rec h3{margin:0 0 6px;padding:0;font-size:18px;font-weight:700}
+.rec h3 .pct{margin-left:10px;font-size:13px;font-weight:700;color:var(--accent);white-space:nowrap}
+.rec .mi{font-size:13px;margin-left:8px}
+.rec .rev{min-width:170px;text-align:right;font-size:13px;color:var(--mute)}.rec .rev b{color:#fff}
+.rec .rev .bar{height:5px;margin:6px 0 5px}
+.badge{display:inline-block;padding:3px 10px;border-radius:99px;font-size:11px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;background:rgba(250,204,21,.14);border:1px solid rgba(250,204,21,.5);color:#fde68a;margin:2px 3px 2px 0}
+.shots{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:12px}
+.shots img{display:block;width:100%;aspect-ratio:16/9;object-fit:cover;border-radius:10px;border:1px solid var(--line);background:#0b1520}
+.rec>.lbl{margin:14px 0 6px}
+.receipt{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.receipt>div{padding:8px 10px;border:1px solid var(--line);border-radius:10px;background:rgba(11,21,32,.55)}
+.receipt .lbl{display:flex;justify-content:space-between;margin-bottom:4px}.receipt .lbl b{letter-spacing:0;text-transform:none;color:var(--text)}
+.why{color:var(--mute);font-size:13px;margin-top:4px}
+[class*="st-key-rec_"]{margin-bottom:6px}
+[class*="st-key-rec_"] [data-testid=stExpander] details{border-radius:0 0 16px 16px;border-top:0!important}
+[class*="st-key-rec_"] [data-testid=stExpander] summary p{font-size:12px;letter-spacing:.16em;text-transform:uppercase;color:var(--mute)}
+[class*="st-key-view_"] button p{font-size:13px;color:var(--accent2)}
+.ana{display:grid;grid-template-columns:250px 1fr;gap:12px}
+.ana>div{padding:12px;border:1px solid var(--line);border-radius:12px;background:rgba(11,21,32,.55)}
+.ana .lbl{color:var(--accent);margin-bottom:10px}
+.ringrow{display:flex;gap:12px;align-items:center}
+.ring{flex:none;width:78px;height:78px;border-radius:50%;display:grid;place-items:center}
+.ring b{width:56px;height:56px;border-radius:50%;display:grid;place-items:center;background:var(--field);color:#fff;font-size:15px}
+.leg{display:flex;justify-content:space-between;gap:10px;font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--mute);margin:5px 0}
+.leg b{color:var(--text)}.dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:7px}
+.ana .mode{margin:0 0 10px}
+/* quick taste shaping panel */
+.st-key-shape{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:14px;backdrop-filter:blur(8px)}
+.st-key-shape button{justify-content:flex-start;border-radius:12px;text-align:left}
+.st-key-shape .pd{font-size:12px;color:var(--mute);margin:-12px 0 2px 4px;line-height:1.4}
+.match{padding:4px 10px;border-radius:999px;font-weight:700;font-size:13px;color:#06121c;white-space:nowrap}
+.price{font-weight:700;font-size:17px;color:#fff;white-space:nowrap}
+@media(max-width:640px){.rec .top{grid-template-columns:1fr}.rec .cap{width:100%}.rec .rev{text-align:left}.receipt,.ana{grid-template-columns:1fr}}
+/* hidden gem: corner card on wide screens */
+.gem{position:fixed;right:22px;bottom:22px;width:260px;z-index:5;display:none;background:var(--field);border:1px solid var(--line);border-radius:16px;overflow:hidden;box-shadow:0 20px 52px rgba(0,0,0,.5)}
+@media(min-width:1600px){.gem{display:block}}
+.gem img{width:100%;display:block;aspect-ratio:460/215;object-fit:cover}
+.gem .gb{padding:10px 14px 12px;font-size:12px;color:var(--mute);line-height:1.5}
+.gem .pill{display:inline-block;font-size:10px;font-weight:700;letter-spacing:.14em;padding:2px 8px;border:1px solid var(--line2);border-radius:99px;color:var(--accent2);margin-right:6px}
+.gem a{display:block;margin:6px 0 2px;color:#fff!important;font-weight:700;font-size:15px;text-decoration:none}
+/* category worlds */
+.catcard{border-radius:16px;overflow:hidden;margin:4px 0 6px;background:var(--cp);border:1px solid var(--cl);box-shadow:0 14px 32px -16px var(--ca)}
 .scene{position:relative;height:100px;overflow:hidden}
 .scene::after{content:'';position:absolute;inset:0;z-index:1;background:linear-gradient(transparent 35%,rgba(0,0,0,.72))}
 .scene .ttl{position:absolute;z-index:2;left:14px;right:14px;bottom:9px}
 .scene .ttl h3{margin:0;padding:0;font-family:var(--cd);font-size:25px;line-height:1.1;color:#fff;text-shadow:0 2px 12px rgba(0,0,0,.85)}
 .scene .realm{font-family:var(--cb);font-size:11px;letter-spacing:.18em;text-transform:uppercase;color:var(--ca2)}
 .cbody{padding:12px 14px 14px;font-family:var(--cb)}
-.empty{color:var(--mute);padding:28px;text-align:center;border:1px dashed var(--line);border-radius:12px;background:var(--panel)}
+.empty{color:var(--mute);padding:28px;text-align:center;border:1px dashed var(--line2);border-radius:16px;background:var(--panel);backdrop-filter:blur(8px)}
 .note{font-size:12px;color:var(--mute);margin-top:12px}
 .mode{margin:12px 0 16px}.mh{display:flex;justify-content:space-between;font-size:13px;margin-bottom:4px}.mh.sm{font-size:12px;color:var(--mute);margin-top:6px}
-.todo{display:flex;justify-content:space-between;font-size:13px;padding:5px 0;border-bottom:1px dashed var(--line)}
+.todo{display:flex;justify-content:space-between;gap:10px;font-size:13px;padding:6px 0;border-bottom:1px dashed var(--line)}
 table.t{width:100%;border-collapse:collapse;font-size:13px}
 table.t td,table.t th{padding:6px 8px;border-bottom:1px solid var(--line);text-align:left}
 table.t th{color:var(--mute);font-weight:600;font-size:12px}
 svg text{fill:var(--text);font-size:11px}
 </style>
 """
+
+# gamepad mark used in the top bar and the hero
+MARK = ('<svg viewBox="0 0 64 44" aria-hidden="true"><path d="M17 4h30c9 0 15 9 16 22 1 10-3 16-9 16-4 0-7-3-10-8H20'
+        'c-3 5-6 8-10 8-6 0-10-6-9-16C2 13 8 4 17 4z" fill="#1b374a" stroke="#b8e6fe" stroke-width="2.5"/>'
+        '<path d="M15 20h4v-4h4v4h4v4h-4v4h-4v-4h-4z" fill="#b8e6fe"/><circle cx="44" cy="18" r="3" fill="#7dd3fc"/>'
+        '<circle cx="50" cy="25" r="3" fill="#b8e6fe"/></svg>')
 
 
 def html(s: str):
@@ -130,15 +223,20 @@ def fetch(name: str) -> pd.DataFrame:
     return pd.DataFrame(r.json()["rows"])
 
 
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=6 * 3600, show_spinner=False)
 def load_catalog() -> pd.DataFrame:
-    df = fetch("catalog")
-    df["genres"] = df["tags"].str.split(",")
-    df["price"] = df["price"].astype(float)
-    df["rating"] = df["rating"].astype(float)
-    df["owners"] = df["owners"].astype(float)
-    df["label"] = df["name"] + "  (" + df["app_id"].astype(str) + ")"
-    return df.reset_index(drop=True)
+    """The games the recommender works over. Row position is the game id used across the app (G.loc[gid])."""
+    if FULL_CATALOG:
+        df = db.build_catalog(db.fetch_games(GAMES_URL, GAMES_KEY), MIN_REVIEWS, extra_tags=gd.csv_tags())
+    else:  # old source: the top 3,000 games by review count, from the Modal API
+        df = fetch("catalog")
+        df["genres"] = df["tags"].str.split(",")
+        df["price"] = df["price"].astype(float)
+        df["rating"] = df["rating"].astype(float)
+        df["label"] = df["name"] + "  (" + df["app_id"].astype(str) + ")"
+        df = df.reset_index(drop=True)
+    df["modes"] = df.genres.apply(modes_for)
+    return df
 
 
 # ---------- profile math ----------
@@ -160,25 +258,29 @@ def profile(G, played, feats):
     return dict(tot=tot, aff=aff, lp=lp, avg_price=math.exp(lp) - 1, n=len(played), modes=modes)
 
 
-def recommend(G, P, played, w_genre, budget, focus_genres):
+def recommend(G, P, played, w_genre, budget, n=None):
+    """Top `n` unplayed games as (score, genre fit, price fit, best genre, row, mode fit), best first.
+    Scored column-wise: the full catalog is tens of thousands of games."""
     pool = G[~G.index.isin(played) & (G.price <= budget)]
-    if focus_genres:
-        pool = pool[pool.genres.apply(lambda gs: any(x in focus_genres for x in gs))]
-    max_a = max(P["aff"].values(), default=0.0001)
+    if pool.empty:
+        return []
+    aff = P["aff"]
+    max_a = max(aff.values(), default=0.0001)
     w_g = w_genre / 100
     th = sum(P["modes"].values())
     share = {m: v / th for m, v in P["modes"].items()} if th else {}
+    gm = pool.genres.explode().map(aff).fillna(0).groupby(level=0).sum() / pool.genres.str.len() / max_a
+    d = np.log1p(pool.price) - P["lp"]
+    pm = np.exp(-(d * d) / (2 * 1.1 * 1.1))
+    q = (pool.rating - 70) / 30
+    mf = pool.modes.apply(lambda ms: min(1, sum(share.get(m, 0) for m in ms))) if share else pd.Series(.5, pool.index)
+    score = ((w_g * gm + (1 - w_g) * pm) * 0.8 + q * 0.1 + mf * 0.1).clip(0, 1)
     rows = []
-    for gid, g in pool.iterrows():
-        gm = sum(P["aff"].get(x, 0) for x in g.genres) / len(g.genres) / max_a
-        d = math.log1p(g.price) - P["lp"]
-        pm = math.exp(-(d * d) / (2 * 1.1 * 1.1))
-        q = (g.rating - 70) / 30
-        mf = min(1, sum(share.get(m, 0) for m in modes_for(g.genres))) if share else .5
-        score = max(0, min(1, (w_g * gm + (1 - w_g) * pm) * 0.8 + q * 0.1 + mf * 0.1))
-        best = max(g.genres, key=lambda x: P["aff"].get(x, 0))
-        rows.append((score, gm, pm, best, g, mf))
-    return sorted(rows, key=lambda r: -r[0])
+    for gid in score.sort_values(ascending=False, kind="stable").index[:n]:
+        g = G.loc[gid]
+        best = max(g.genres, key=lambda x: aff.get(x, 0))
+        rows.append((float(score[gid]), float(gm[gid]), float(pm[gid]), best, g, float(mf[gid])))
+    return rows
 
 
 def radar(entries):
@@ -208,24 +310,75 @@ def bar(pct):
     return f'<div class="bar"><i style="width:{pct:.0f}%"></i></div>'
 
 
-def world_card(title, genres, body, key=None):
-    """Category card: a small animated world built from the category's genres, with `body` underneath."""
-    key = key or T.theme_for(genres)
-    return (f'<div class="catcard" style="{T.card_vars(key)}">{T.scene_html(key, title)}'
-            f'<div class="cbody">{body}</div></div>')
+def capsule(app_id) -> str:
+    """Steam's store header image for a game."""
+    return f"https://cdn.akamai.steamstatic.com/steam/apps/{int(app_id)}/header.jpg"
+
+
+@st.cache_resource
+def _shot_store() -> dict:
+    """app_id -> screenshot thumbnail URLs, shared by every session for the life of the server."""
+    return {}
+
+
+def _fetch_shots(app_id: int):
+    """Up to three store screenshots from Steam's public store API. None when Steam didn't answer (so it's retried)."""
+    try:
+        r = requests.get("https://store.steampowered.com/api/appdetails",
+                         params={"appids": app_id, "filters": "screenshots"}, timeout=6)
+        r.raise_for_status()
+        d = r.json()[str(app_id)]
+        return [s["path_thumbnail"] for s in ((d.get("data") or {}).get("screenshots") or [])[:3]]
+    except (requests.RequestException, ValueError, KeyError, TypeError, AttributeError):
+        return None
+
+
+def screenshots(app_ids) -> dict:
+    """app_id -> screenshot URLs for the given games, fetching the ones not seen yet in parallel."""
+    store = _shot_store()
+    missing = [a for a in app_ids if a not in store]
+    if missing:
+        with ThreadPoolExecutor(8) as pool:
+            for a, urls in zip(missing, pool.map(_fetch_shots, missing)):
+                if urls is not None:
+                    store[a] = urls
+    return {a: store.get(a, []) for a in app_ids}
 
 
 # ---------- page ----------
-if not API_URL:
-    html(CSS + T.theme_css(T.DEFAULT) + T.fx_html(T.DEFAULT))
-    st.error("Set MODAL_API_URL (your deployed Modal endpoint URL) in .streamlit/secrets.toml.")
+html(CSS + T.backdrop_html())  # styled before the catalog loads, so the wait isn't on a blank page
+if not (FULL_CATALOG or API_URL):
+    st.error("Set GAMES_SUPABASE_URL and GAMES_SUPABASE_KEY (full Steam catalog), or MODAL_API_URL, "
+             "in .streamlit/secrets.toml.")
     st.stop()
 
-with st.spinner("Heating the forge..."):
-    G = load_catalog()
+with st.spinner("Stocking the shelves... (first load pulls the full Steam catalog, about 30 seconds)"
+                if FULL_CATALOG else "Stocking the shelves..."):
+    try:
+        G = load_catalog()
+    except requests.RequestException as e:
+        st.error(f"Couldn't load the games catalog: {e}")
+        st.stop()
 ss = st.session_state
 ss.setdefault("picked", [])
-ss.setdefault("cats", [{"name": "Cozy Grind", "genres": ["Cozy", "Farming Sim", "Simulation"]}])
+ss.setdefault("view", None)  # app_id of the game whose stats page is open
+ss.setdefault("view_why", None)
+ss.setdefault("mode", "Simple")  # Simple: just pick games. Advanced: per-game hours / modes and recommender tuning
+for k, v in (("w_genre", 70), ("budget", 60)):
+    ss.setdefault(k, v)
+# Streamlit forgets a widget's value on any run where the widget isn't drawn. Simple mode hides the per-game and
+# tuning controls, so re-assign their values every run to keep them (Streamlit's documented workaround).
+for k in list(ss.keys()):
+    if str(k).startswith(("h_", "m_", "s_")) or k in ("w_genre", "budget"):
+        ss[k] = ss[k]
+
+
+def open_game(app_id, why):
+    ss.view, ss.view_why = app_id, why
+
+
+def close_game():
+    ss.view = ss.view_why = None
 
 
 def load_demo():
@@ -234,7 +387,7 @@ def load_demo():
     for gid in random.sample(range(len(G)), random.randint(4, 10)):
         lab = G.loc[gid].label
         picks.append(lab)
-        ss[f"h_{lab}"] = int(random.choice([random.randint(2, 30), random.randint(20, 150), random.randint(100, 600)]))
+        ss[f"h_{lab}"] = float(random.choice([random.randint(3, 30), random.randint(20, 150), random.randint(100, 600)]))
         have = modes_for(G.loc[gid].genres)
         for mode in MODES:
             ss[f"m_{lab}_{mode}"] = mode in have
@@ -250,10 +403,10 @@ def reset_game_state(lab):
 
 
 def catalog_matches(games):
-    """Split a Steam library into its played games (most hours first) and the (catalog row, hours) ones we know."""
-    played_games = sorted((g for g in games if g["hours"] > 0), key=lambda g: -g["hours"])
+    """Every owned game that's in the catalog, as (catalog row, hours), most hours first."""
     by_app = dict(zip(G.app_id.astype(int), G.index))
-    return played_games, [(int(by_app[g["appid"]]), g["hours"]) for g in played_games if g["appid"] in by_app]
+    return [(int(by_app[g["appid"]]), min(9999.0, round(g["hours"], 1)))
+            for g in sorted(games, key=lambda g: -g["hours"]) if g["appid"] in by_app]
 
 
 def default_feats(gid):
@@ -282,12 +435,14 @@ def load_rival(source):
     except requests.RequestException as e:
         ss.rival_msg = f"Couldn't reach the Steam API: {e}"
         return
-    played_games, matched = catalog_matches(games)
-    if not matched:
-        ss.rival_msg = f"{name} has {len(played_games)} played games, but none are in the catalog yet."
+    matched = catalog_matches(games)
+    their_played = {gid: h for gid, h in matched if h >= MIN_HOURS}
+    if not their_played:
+        ss.rival_msg = (f"{name} owns {len(games)} games, but none of the ones in the catalog have "
+                        f"{MIN_HOURS:g}+ hours played.")
         return
-    ss.rival = dict(sid=sid, name=name, played={gid: max(1, round(h)) for gid, h in matched[:STEAM_MAX]},
-                    n_played=len(played_games), n_owned=len(games))
+    ss.rival = dict(sid=sid, name=name, played=their_played, owned=[gid for gid, _ in matched],
+                    n_played=sum(g["hours"] > 0 for g in games), n_owned=len(games))
 
 
 def load_friends():
@@ -301,7 +456,7 @@ def load_friends():
 
 
 def import_steam(sid=None):
-    """Replace the played list with the profile's most-played games that are in the catalog.
+    """Replace the played list with every owned game that's in the catalog (most hours first).
     Uses the signed-in Steam ID if given, otherwise whatever is typed in the profile box."""
     ss.steam_msg = None
     try:
@@ -313,25 +468,24 @@ def import_steam(sid=None):
     except requests.RequestException as e:
         ss.steam_msg = ("error", f"Couldn't reach the Steam API: {e}")
         return
-    played_games, matched = catalog_matches(games)
+    matched = catalog_matches(games)
     if not matched:
-        ss.steam_msg = ("warning", f"Found {len(games)} owned games ({len(played_games)} played), but none of the "
-                                   "played ones are in the catalog yet.")
+        ss.steam_msg = ("warning", f"Found {len(games)} owned games, but none of them are in the catalog yet.")
         return
     picks = []
-    for gid, h in matched[:STEAM_MAX]:
+    for gid, h in matched:
         lab = G.loc[gid].label
         picks.append(lab)
-        ss[f"h_{lab}"] = max(1, min(9999, round(h)))
+        ss[f"h_{lab}"] = h
         reset_game_state(lab)
     ss.picked = picks
-    skipped = len(played_games) - len(matched)
-    msg = f"Imported {len(picks)} games from {len(played_games)} played"
-    if len(matched) > STEAM_MAX:
-        msg += f" (your top {STEAM_MAX} by hours)"
+    skipped = len(games) - len(matched)
+    counted = sum(h >= MIN_HOURS for _, h in matched)
+    msg = (f"Imported {len(picks)} of your {len(games)} owned games; the {counted} with {MIN_HOURS:g}+ hours shape "
+           f"your recommendations")
     if skipped:
         msg += f"; {skipped} {'wasn' if skipped == 1 else 'weren'}'t in the catalog"
-    ss.steam_msg = ("success", msg + ". Adjust hours and modes below.")
+    ss.steam_msg = ("success", msg + ". Adjust hours and modes in Advanced mode.")
 
 
 def steam_sign_out():
@@ -341,7 +495,7 @@ def steam_sign_out():
 
 
 # Steam's sign-in page redirects back here with openid.* query params: verify them and import right away.
-# This must run before the sidebar widgets are drawn, because it fills the played-games list.
+# This must run before the search box is drawn, because it fills the played-games list.
 if STEAM_KEY and "openid.mode" in st.query_params:
     reply = st.query_params.to_dict()
     st.query_params.clear()  # so a refresh doesn't re-submit the (one-time) reply
@@ -354,88 +508,151 @@ if STEAM_KEY and "openid.mode" in st.query_params:
     except requests.RequestException as e:
         ss.steam_msg = ("error", f"Couldn't reach Steam to confirm the sign-in: {e}")
 
-with st.sidebar:
-    st.markdown("##### 0 · IMPORT FROM STEAM")
-    if STEAM_KEY:
-        if ss.get("steam_id"):
-            st.markdown(f"Signed in as **{ss.steam_name}**")
-            c1, c2 = st.columns([3, 1])
-            c1.button("Re-import my games", type="primary", on_click=import_steam, args=(ss.steam_id,),
+
+def steam_menu():
+    """Top-right Steam pill: sign in through Steam, or import from a typed profile."""
+    signed_in = ss.get("steam_id")
+    with st.popover(f"🎮  {ss.get('steam_name') or 'Steam'}" if signed_in else "🎮  Import from Steam"):
+        if not STEAM_KEY:
+            st.info("Add STEAM_API_KEY to .streamlit/secrets.toml to import your games from Steam. "
+                    "Get a key at steamcommunity.com/dev/apikey.")
+            return
+        if signed_in:
+            st.markdown(f"Signed in as **{ss.get('steam_name') or ss.steam_id}**")
+            st.button("Re-import my games", type="primary", on_click=import_steam, args=(ss.steam_id,),
                       use_container_width=True)
-            c2.button("Sign out", on_click=steam_sign_out, use_container_width=True)
+            st.button("Sign out", on_click=steam_sign_out, use_container_width=True)
         else:
             # plain link with target=_self so Steam returns to this tab (st.link_button opens a new one)
             st.markdown(f'<a href="{S.login_url(APP_URL)}" target="_self" class="steam-login">'
                         '<img src="https://community.fastly.steamstatic.com/public/images/signinthroughsteam/sits_01.png" '
                         'alt="Sign in through Steam"></a>', unsafe_allow_html=True)
-            with st.expander("Or enter a profile instead"):
-                st.text_input("Steam profile", key="steam_user",
-                              placeholder="Custom URL name, profile URL or SteamID64", label_visibility="collapsed")
-                st.button("Import played games", on_click=import_steam, use_container_width=True)
-        msg = ss.get("steam_msg")
-        if msg:
-            getattr(st, msg[0])(msg[1])
-        st.caption("Your Steam profile and its Game details must be set to Public. Only played games that are in "
-                   "the catalog are imported, with their lifetime hours.")
-    else:
-        st.info("Add STEAM_API_KEY to .streamlit/secrets.toml to import your games from Steam. "
-                "Get a key at steamcommunity.com/dev/apikey.")
-    st.markdown("##### 1 · YOUR PLAYED GAMES")
-    st.multiselect("Search games", G.label.tolist(), key="picked", label_visibility="collapsed",
-                   placeholder="Search games...")
-    c1, c2 = st.columns([3, 1])
-    c1.button("Load demo profile", type="primary", on_click=load_demo, use_container_width=True)
-    c2.button("Clear", on_click=lambda: ss.update(picked=[]), use_container_width=True)
-    played, feats = {}, {}
-    for lab in ss.picked:
-        gid = int(G.index[G.label == lab][0])
-        ss.setdefault(f"h_{lab}", 20)
-        with st.expander(lab.rsplit("  (", 1)[0]):
-            played[gid] = st.number_input("Hours played", min_value=1, max_value=9999, key=f"h_{lab}")
-            have = modes_for(G.loc[gid].genres)
-            for mode in MODES:
-                ss.setdefault(f"m_{lab}_{mode}", mode in have)
-            on = [m for m in MODES if ss[f"m_{lab}_{m}"]]
-            solo = len(on) == 1  # the only mode played is all of the time played
-            raw = {}
-            for mode, (ic, name) in MODES.items():
-                if not st.checkbox(f"{ic} {name}", key=f"m_{lab}_{mode}"):
-                    continue
-                if solo:
-                    ss[f"s_{lab}_{mode}"] = 100
-                else:
-                    ss.setdefault(f"s_{lab}_{mode}", 50)
-                raw[mode] = st.slider("Share of hours", 0, 100, key=f"s_{lab}_{mode}", format="%d%%", disabled=solo,
-                                      help="Locked at 100% while this is the only mode ticked." if solo else
-                                      "What percentage of your hours on this game went into this mode.")
-            tot = sum(raw.values())
-            feats[gid] = {m: s / tot if tot else 1 / len(raw) for m, s in raw.items()}
-    st.caption("Open a game to set its hours, which modes you play (story, co-op, PvP) and what percentage of your "
-               "hours went into each (locked to 100% when only one is ticked). Modes are pre-ticked from the game's "
-               "Steam tags. Use Import from Steam above to fill this list from your Steam library.")
+            st.text_input("Or enter a profile", key="steam_user",
+                          placeholder="Custom URL name, profile URL or SteamID64")
+            st.button("Import my library", on_click=import_steam, use_container_width=True)
+        st.caption("Your Steam profile and its Game details must be set to Public. Every owned game that's in the "
+                   f"catalog is imported with its lifetime hours; games under {MIN_HOURS:g} hours don't count "
+                   "toward your taste profile.")
 
+
+def game_inputs(lab, gid, show):
+    """(hours, {mode: share of hours}) for one played game. The values live in session state, defaulted from the
+    game's Steam tags, so Simple mode can use them without drawing anything; with `show` the controls are drawn."""
+    ss[f"h_{lab}"] = float(ss.get(f"h_{lab}", 20))  # float, so Steam's fractional hours survive the 2.5h cutoff
+    have = modes_for(G.loc[gid].genres)
+    for mode in MODES:
+        ss.setdefault(f"m_{lab}_{mode}", mode in have)
+    on = [m for m in MODES if ss[f"m_{lab}_{m}"]]
+    solo = len(on) == 1  # the only mode played is all of the time played
+    for m in on:
+        if solo:
+            ss[f"s_{lab}_{m}"] = 100
+        else:
+            ss.setdefault(f"s_{lab}_{m}", 50)
+    if show:
+        st.number_input("Hours played", min_value=0.0, max_value=9999.0, step=1.0, format="%.1f", key=f"h_{lab}",
+                        help=f"Games under {MIN_HOURS:g} hours are left out of your taste profile.")
+        for mode, (ic, name) in MODES.items():
+            if st.checkbox(f"{ic} {name}", key=f"m_{lab}_{mode}"):
+                st.slider("Share of hours", 0, 100, key=f"s_{lab}_{mode}", format="%d%%", disabled=solo,
+                          help="Locked at 100% while this is the only mode ticked." if solo else
+                          "What percentage of your hours on this game went into this mode.")
+    raw = {m: ss[f"s_{lab}_{m}"] for m in on}
+    tot = sum(raw.values())
+    return ss[f"h_{lab}"], {m: s / tot if tot else 1 / len(raw) for m, s in raw.items()}
+
+
+# ---- top bar: brand on the left, Steam import and the mode switch on the right
+left, right = st.columns([1, 2], vertical_alignment="center")
+with left:
+    html(f'<div class="brand">{MARK}<span>Taste<b>Forge</b></span></div>')
+with right, st.container(horizontal=True, horizontal_alignment="right", key="topbar"):
+    steam_menu()
+    with st.popover(f"Mode: {ss.mode}"):
+        st.radio("Mode", ["Simple", "Advanced"], key="mode", label_visibility="collapsed",
+                 captions=["Pick your games, get recommendations", "Hours, play modes, weights, budget and filters"])
+adv = ss.mode == "Advanced"
+
+# ---- hero: title and one big search box
+html(f"""<div class="hero"><div class="ttl">{MARK}<h1>Find what to play next</h1></div>
+<p>Add the games you've played. TasteForge learns what you spend your hours on (genres, prices, play styles)
+and finds what fits you next.</p></div>""")
+with st.container(key="heromid"):
+    with st.container(key="search"):
+        st.multiselect("Games you've played", G.label.tolist(), key="picked", label_visibility="collapsed",
+                       placeholder="Search a game you've played...")
+    with st.container(horizontal=True, horizontal_alignment="center"):
+        st.button("Try a demo profile", on_click=load_demo)
+        if ss.picked:
+            st.button("Clear", on_click=lambda: ss.update(picked=[]))
+    msg = ss.get("steam_msg")
+    if msg:
+        getattr(st, msg[0])(msg[1])
+    with st.container(key="why"), st.expander("How the recommender works"):
+        st.markdown(
+            "Every game you add is weighted by the **hours** you put into it. From that, TasteForge builds your "
+            "player profile: which **genres and tags** your time goes to, the **price** you're comfortable "
+            "paying, and how you play (**story**, **co-op** or **PvP**).\n\n"
+            "Each game you haven't played is then scored on how well its tags match your genre taste and how close "
+            "its price sits to your habits (80%), how well players rate it (10%) and whether it fits your play "
+            "style (10%).\n\n"
+            "**Simple** mode uses sensible defaults. Switch to **Advanced** (top right) to set hours and play modes "
+            "per game, change the genre-vs-price weighting or cap the budget. "
+            "Use **Import from Steam** to fill the list from your library.")
+SOURCE = (f"{len(G):,} Steam games with {MIN_REVIEWS}+ reviews, from the full Steam catalog in Supabase" if FULL_CATALOG
+          else f"{len(G):,} well-reviewed Steam games from Supabase")
+html(f'<div class="src">Live data · {SOURCE}</div>')
+
+# ---- played games: Advanced draws each game's hours and modes, Simple uses the stored / tag-based defaults
+owned, feats = {}, {}  # every picked game: none of them is ever recommended back
+row_of = dict(zip(G.label, G.index))
+picked = [(lab, int(row_of[lab])) for lab in ss.picked]
+if adv and picked:
+    with st.container(key="mygames"):
+        st.markdown("##### Your games · hours and play modes")
+        cols = st.columns(3)
+        for i, (lab, gid) in enumerate(picked):
+            with cols[i % 3], st.expander(lab.rsplit("  (", 1)[0]):
+                owned[gid], feats[gid] = game_inputs(lab, gid, True)
+        st.caption("Set each game's hours, which modes you play (story, co-op, PvP) and what percentage of your "
+                   "hours went into each (locked to 100% when only one is ticked). Modes are pre-ticked from the "
+                   "game's Steam tags.")
+else:
+    for lab, gid in picked:
+        owned[gid], feats[gid] = game_inputs(lab, gid, False)
+
+# only games with real time in them shape the taste profile; barely-touched ones would just add noise
+played = {gid: h for gid, h in owned.items() if h >= MIN_HOURS}
 P = profile(G, played, feats)
 
-# ---- the world is fixed by the chosen games (hours-weighted)
-world, drivers = T.theme_for_library([
-    (G.loc[g]["name"], G.loc[g].genres, h) for g, h in played.items()])
-cat_worlds = {T.theme_for(c["genres"]) for c in ss.cats} | {T.theme_for(ss.get("new_picks", []))}
-html(CSS + T.theme_css(world, cat_worlds) + T.fx_html(world))
+# ---- world for the animated scene on the open game page
+viewed = G[G.app_id == ss.view] if ss.view else G.iloc[:0]
+scenes = set()
+if ss.view and gd.has(ss.view):
+    scenes.add(T.theme_for(gd.tags_of(ss.view)))
+elif len(viewed):  # games only in the new catalog, not in games_slim.csv
+    scenes.add(T.theme_for(viewed.iloc[0].genres))
+html(T.scene_css(scenes))
 
-tw = T.THEMES[world]
-why = f"Shaped by {', '.join(drivers)}" if drivers else "Pick some games and the whole world will change"
-html(f"""<div class="hero"><div><div class="logo"><svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M12 2c.6 3.6 4.6 5.4 4.6 10.2A4.6 4.6 0 0 1 12 17a4.6 4.6 0 0 1-4.6-4.8c0-1.9.9-3.1 1.9-4 .1 1.7.9 2.6 1.9 2.8C10.9 8 11.2 5 12 2z"/><rect x="5" y="19" width="14" height="3" rx="1" fill="currentColor" opacity=".7"/></svg>
-<h1 class="tf">TASTE<span>FORGE</span></h1></div>
-<div class="sub">Pick games you've played and the app builds your Player Profile from genre, price and play-style habits,
-lets you forge your own custom categories, then recommends what to play next.</div></div>
-<div class="atmo"><span class="ico">{tw['icon']}</span><div><b>{tw['name']}</b><small>{tw['tag']} {why}.</small></div></div></div>""")
-html(f'<div class="sub" style="text-align:right;margin:4px 0 6px">Live data · {len(G):,} well-reviewed Steam games from Supabase</div>')
+# ---- hidden gem: a well-loved, lesser-known game in the bottom-right corner (wide screens only)
+if "gem" not in ss:
+    pool = G[(G.rating >= 92) & G.reviews.between(300, 5000)] if "reviews" in G else G.iloc[:0]
+    ss.gem = int(pool.sample(1).index[0]) if len(pool) else None
+if ss.gem is not None:
+    g = G.loc[ss.gem]
+    html(f'<div class="gem fx-host"><img src="{capsule(g.app_id)}" alt=""><div class="gb">'
+         f'<span class="pill">HIDDEN GEM</span>{g.rating:.0f}% positive'
+         f'<a href="https://store.steampowered.com/app/{int(g.app_id)}/" target="_blank">{escape(g["name"])} ↗</a>'
+         f'{int(g.reviews):,} reviews · {fmt(g.price)}</div></div>')
 
-tabs = st.tabs(["Player Profile", "Recommendations", "Custom Categories", "Genre Success", "Compare"])
-NEED = '<div class="empty">Add some games on the left (or hit <b>Load demo profile</b>) to build your Player Profile.</div>'
+tabs = st.tabs(["Recommendations", "Player Profile", "Compare"])
+NEED = (f'<div class="empty">None of your games have {MIN_HOURS:g}+ hours yet, so there\'s nothing to build a taste '
+        'profile from. Add a game you\'ve spent more time in, or raise the hours in Advanced mode.</div>' if owned else
+        '<div class="empty">Search for a few games you\'ve played above (or hit <b>Try a demo profile</b>) to build '
+        'your player profile.</div>')
 
 # ----- Player Profile -----
-with tabs[0]:
+with tabs[1]:
     if not played:
         html(NEED)
     else:
@@ -475,7 +692,7 @@ with tabs[0]:
                          f'<span>{round(hrs)}h · {round(hrs / th * 100)}% of your time</span></div>{bar(hrs / th * 100)}</div>')
         big = sorted(played.items(), key=lambda kv: -kv[1])[:5]
         big_html = "".join(
-            f'<div class="todo"><span>{G.loc[g]["name"]}</span><span>{h}h · '
+            f'<div class="todo"><span>{G.loc[g]["name"]}</span><span>{h:g}h · '
             + " ".join(f'{MODES[m][0]} {round(s * 100)}%' for m, s in feats[g].items()) + '</span></div>' for g, h in big)
         c, d = st.columns(2)
         with c:
@@ -485,89 +702,119 @@ with tabs[0]:
                  f'<div class="note">Hours and how each game\'s time splits between story, co-op and PvP.</div></div>')
 
 # ----- Recommendations -----
-with tabs[1]:
-    if not played:
+PRESETS = [  # quick taste shaping: (title, what it does, session key it sets, value)
+    ("More like my library", "Lean harder on the genres you play most", "w_genre", 90),
+    ("Balanced", "The default 70 / 30 genre-to-price mix", "w_genre", 70),
+    ("Match my spending", "Lean on what you usually pay for a game", "w_genre", 35),
+    ("Under $20", "Hide anything pricier than $20", "budget", 20),
+    ("Free only", "Only free-to-play games", "budget", 0),
+    ("Any price", "Remove the budget cap", "budget", 60),
+]
+PART_C = ("#7dd3fc", "#86efac", "#f9a8d4", "#fde047")  # genre, price, play mode, reviews
+
+
+def shape(key, value):
+    ss[key] = value
+
+
+def short(n) -> str:
+    n = int(n)
+    return f"{n / 1e6:.1f}M" if n >= 1e6 else f"{n / 1e3:.0f}k" if n >= 1e4 else f"{n / 1e3:.1f}k" if n >= 1e3 else str(n)
+
+
+def strength(v) -> str:
+    return "Strong" if v >= .66 else "Moderate" if v >= .33 else "Light"
+
+
+def chips(tags, sel=False) -> str:
+    return "".join(f'<span class="chip {"sel" if sel else ""}">{escape(str(x))}</span>' for x in tags)
+
+
+def analysis_html(score, parts) -> str:
+    """Score ring + per-signal bars. parts: (name, fit 0-1, weight 0-1), in PART_C order."""
+    stops, at = [], 0.0
+    for (_, fit, w), c in zip(parts, PART_C):
+        stops.append(f"{c} {at:.1f}% {at + fit * w * 100:.1f}%")
+        at += fit * w * 100
+    stops.append(f"#172533 {at:.1f}% 100%")
+    legend = "".join(f'<div class="leg"><span><i class="dot" style="background:{c}"></i>{name}</span>'
+                     f'<b>{strength(fit)}</b></div>' for (name, fit, _), c in zip(parts, PART_C))
+    bars = "".join(
+        f'<div class="mode"><div class="mh"><span><i class="dot" style="background:{c}"></i>{name}</span>'
+        f'<span>weight {round(w * 100)}% / fit {round(fit * 100)}%</span></div>'
+        f'<div class="bar"><i style="width:{fit * 100:.0f}%;--ca:{c};--ca2:{c}"></i></div></div>'
+        for (name, fit, w), c in zip(parts, PART_C))
+    return (f'<div class="ana"><div><div class="lbl">Score composition</div><div class="ringrow">'
+            f'<div class="ring" style="background:conic-gradient({",".join(stops)})"><b>{round(score * 100)}%</b></div>'
+            f'<div style="flex:1">{legend}</div></div></div>'
+            f'<div><div class="lbl">Fit by signal</div>{bars}</div></div>')
+
+
+with tabs[0]:
+    if ss.view:
+        gd.show(ss.view, ss.view_why, close_game, basic=viewed.iloc[0] if len(viewed) else None)
+    elif not played:
         html(NEED)
     else:
-        st.markdown("##### TUNE THE RECOMMENDER")
-        w = st.slider("Genre ↔ Price  (left = price habits, right = genre taste)", 0, 100, 70)
-        budget = st.slider("Max budget ($)", 0, 60, 60, step=5)
-        names = [c["name"] for c in ss.cats]
-        focus = st.selectbox("Focus category", ["All genres"] + names)
-        fg = next((c["genres"] for c in ss.cats if c["name"] == focus), None)
-        R = recommend(G, P, played, w, 999 if budget >= 60 else budget, fg)[:8]
-        if not R:
-            html('<div class="empty">Nothing matches those filters. Raise the budget or change the focus category.</div>')
-        top_mode = max(P["modes"], key=P["modes"].get) if P["modes"] else None
-        for score, gm, pm, best, g, mf in R:
-            gw = T.THEMES[T.theme_for(g.genres)]
-            gmodes = modes_for(g.genres)
-            icons = gw["icon"] + "  " + " ".join(MODES[m][0] for m in gmodes)
-            chips = "".join(f'<span class="chip {"sel" if x in P["aff"] else ""}">{x}</span>' for x in g.genres)
-            fit = f" · fits your {MODES[top_mode][1]} play" if top_mode in gmodes else ""
-            html(f"""<div class="rec" style="border-left:4px solid {gw['c']['accent']}"><div class="match" style="background:hsl({round(score * 120)},80%,60%)">{round(score * 100)}%</div>
-            <div><h3>{g['name']}<span class="mi" title="{gw['name']}">{icons}</span></h3><div>{chips}</div>
-            <div class="why">Genre fit {round(gm * 100)}% (you play lots of <b>{best}</b>) · price fit {round(pm * 100)}% · {g.rating:.0f}% positive{fit}</div></div>
-            <div class="price">{fmt(g.price)}</div></div>""")
-
-# ----- Custom Categories -----
-with tabs[2]:
-    all_genres = sorted({x for gs in G.genres for x in gs})
-
-    def create_cat():
-        n, p = ss.new_name.strip(), ss.new_picks
-        if n and p:
-            ss.cats.append({"name": n, "genres": list(p)})
-            realm = T.THEMES[T.theme_for(p)]
-            st.toast(f"{n} forged. Welcome to {realm['name']}.", icon=realm["icon"])
-            ss.new_name, ss.new_picks = "", []
-        else:
-            st.toast("Give it a name and pick at least one genre.", icon="⚠️")
-
-    a, b = st.columns(2)
-    with a:
-        st.markdown("##### FORGE A CATEGORY")
-        name = st.text_input("Name it", placeholder="e.g. 'Rage Quit Club'", key="new_name")
-        picks = st.multiselect("Genres / tags", all_genres, key="new_picks")
-        st.button("Create category", type="primary", on_click=create_cat)
-        if picks:
-            html(world_card(name.strip() or "Your new category", picks,
-                            '<div class="why">Live preview. This is the world your category will live in; '
-                            'it is built from the genres you pick.</div>'))
-        html('<div class="note">Steam\'s built-in tags are broad. Combine genres into your own buckets, then track how much of '
-             'your playtime each one owns and use them as a recommendation filter. Every category gets a world of its own.</div>')
-    with b:
-        st.markdown("##### YOUR CATEGORIES")
-        for i, c in enumerate(ss.cats):
-            hit = [gid for gid in played if any(x in c["genres"] for x in G.loc[gid].genres)]
-            hrs = sum(played[g] for g in hit)
-            share = round(hrs / P["tot"] * 100) if P["tot"] else 0
-            un = G[~G.index.isin(played) & G.genres.apply(lambda gs: any(x in c["genres"] for x in gs))]
-            un = un.sort_values("rating", ascending=False).head(3)
-            chips = "".join(f'<span class="chip sel">{x}</span>' for x in c["genres"])
-            txt = f"<b>{share}%</b> of your playtime ({round(hrs)}h across {len(hit)} games)" if P["tot"] else "Add games to see your playtime share"
-            tu = " · ".join(f"{r['name']} ({fmt(r.price)})" for _, r in un.iterrows()) or "none"
-            html(world_card(c["name"], c["genres"],
-                            f'<div>{chips}</div><div class="why" style="margin:6px 0">{txt}</div>'
-                            f'{bar(share)}<div class="why" style="margin-top:8px">Top unplayed: {tu}</div>'))
-            st.button("Delete", key=f"del{i}", on_click=lambda i=i: ss.cats.pop(i))
-
-# ----- Genre Success -----
-with tabs[3]:
-    gs = fetch("genre_success")
-    for col in ("n", "rating", "price", "owners"):
-        gs[col] = gs[col].astype(float)
-    gs["idx"] = (gs.rating - 70).clip(lower=0) * gs.owners.apply(lambda o: math.log10(1 + o)) * 10
-    gs = gs.sort_values("idx", ascending=False)
-    mx = gs.idx.max() or 1
-    rows = "".join(
-        f"<tr><td>{r.genre}</td><td>{int(r.n):,}</td><td>{r.rating:.1f}%</td><td>{fmt(r.price)}</td><td>{bar(r.idx / mx * 100)}</td></tr>"
-        for r in gs.itertuples())
-    html(f"""<div class="card"><h2>Research question: which genres actually succeed, and does price explain it?</h2>
-    <div class="why" style="margin-bottom:10px">Success Index = avg. positive-review % (above a 70% baseline) × log of combined owners,
-    computed over every game in the database with 50+ reviews.</div>
-    <table class="t"><tr><th>Genre</th><th>Games</th><th>Avg rating</th><th>Avg price</th><th style="width:38%">Success index</th></tr>{rows}</table></div>""")
-
+        main, side = st.columns([3.2, 1], gap="medium")
+        with side, st.container(key="shape"):
+            st.markdown("##### Quick taste shaping")
+            for title, desc, key, val in PRESETS:
+                st.button(title, key=f"shape_{title}", use_container_width=True, on_click=shape, args=(key, val),
+                          type="primary" if ss[key] == val else "secondary")
+                html(f'<div class="pd">{desc}</div>')
+        with main:
+            if adv:
+                with st.container(key="tune"):
+                    st.markdown("##### Tune the recommender")
+                    a, b = st.columns(2)
+                    a.slider("Genre ↔ Price", 0, 100, key="w_genre",
+                             help="Left leans on your price habits, right on your genre taste.")
+                    b.slider("Max budget ($)", 0, 60, step=5, key="budget", help="60 means no limit.")
+            budget = 999 if ss.budget >= 60 else ss.budget
+            R = recommend(G, P, owned, ss.w_genre, budget, n=8)
+            scored = int((~G.index.isin(owned) & (G.price <= budget)).sum())
+            html(f'<div class="rhead"><div><div class="t">Recommendations</div>'
+                 f'<div class="n">Top {len(R)} of {scored:,} games scored</div></div>'
+                 f'<div class="lbl">Sorted by<span>Match Score</span></div></div>')
+            if not R:
+                html('<div class="empty">Nothing fits that budget. Raise the max budget.</div>')
+            aff, w_g = P["aff"], ss.w_genre / 100
+            shots = screenshots([int(r[4].app_id) for r in R])
+            for i, (score, gm, pm, best, g, mf) in enumerate(R):
+                aid = int(g.app_id)
+                gw = T.THEMES[T.theme_for(g.genres)]
+                shared = sorted((x for x in g.genres if x in aff), key=lambda x: -aff[x])
+                fresh = [x for x in g.genres if x not in aff]
+                modes = "".join(f'<span class="chip {"sel" if P["modes"].get(m) else ""}">{MODES[m][0]} {MODES[m][1]}</span>'
+                                for m in modes_for(g.genres))
+                strip = "".join(f'<img src="{escape(u)}" loading="lazy" alt="">' for u in shots.get(aid, []))
+                n_rev = g.get("reviews")
+                with st.container(key=f"rec_{aid}"):
+                    html(f"""<div class="rec"><div class="top">
+                    <div class="cap" style="background-image:url('{capsule(aid)}')"></div>
+                    <div><h3>{escape(g['name'])}<span class="pct">{round(score * 100)}% match</span>
+                    <span class="mi" title="{gw['name']}">{gw['icon']}</span></h3>
+                    <div>{chips([best]) if best in aff else ""}{'<span class="badge">Best match</span>' if i == 0 else ""}</div></div>
+                    <div class="rev">Steam reviews <b>{g.rating:.0f}% positive</b>{bar(g.rating)}
+                    {f"{short(n_rev)} total" if pd.notna(n_rev) else ""}</div></div>
+                    {f'<div class="shots">{strip}</div>' if strip else ""}
+                    <div class="lbl">Match receipt</div>
+                    <div class="receipt">
+                    <div><div class="lbl"><span>Tags you play</span><b>{len(shared)} shared</b></div>
+                    {chips(shared[:6], True) or '<span class="why">None of your tags</span>'}</div>
+                    <div><div class="lbl"><span>New to you</span></div>
+                    {chips(fresh[:6]) or '<span class="why">Nothing new here</span>'}</div>
+                    <div><div class="lbl"><span>Price</span><b>{round(pm * 100)}% fit</b></div>
+                    <span class="chip sel">{fmt(g.price)}</span><span class="why"> you usually pay about {fmt(round(P['avg_price'], 2))}</span></div>
+                    <div><div class="lbl"><span>Play modes</span><b>{round(mf * 100)}% fit</b></div>{modes}</div>
+                    </div></div>""")
+                    with st.expander("Expand analysis"):
+                        html(analysis_html(score, [("Genre fit", gm, w_g * .8), ("Price fit", pm, (1 - w_g) * .8),
+                                                   ("Play mode fit", mf, .1),
+                                                   ("Review quality", min(1, max(0, (g.rating - 70) / 30)), .1)]))
+                        st.button(f"📊  See full stats for {g['name']}  →", key=f"view_{aid}", use_container_width=True,
+                                  on_click=open_game, args=(aid, dict(score=score, gm=gm, pm=pm, mf=mf, best=best)))
 
 # ----- Compare -----
 YOU_C, THEM_C = "var(--accent)", "#b48cff"
@@ -598,12 +845,12 @@ def rec_list(rows, other_ids, who):
 
 def fav_list(title, src, other, n=6):
     rows = [(g, h) for g, h in sorted(src.items(), key=lambda kv: -kv[1]) if g not in other][:n]
-    body = "".join(f'<div class="todo"><span>{G.loc[g]["name"]}</span><span>{h}h · {fmt(G.loc[g].price)}</span></div>'
+    body = "".join(f'<div class="todo"><span>{G.loc[g]["name"]}</span><span>{h:g}h · {fmt(G.loc[g].price)}</span></div>'
                    for g, h in rows)
     return f'<div class="card"><h2>{title}</h2>{body or "<div class=why>Nothing here: you have the same favorites.</div>"}</div>'
 
 
-with tabs[4]:
+with tabs[2]:
     if not STEAM_KEY:
         st.info("Add STEAM_API_KEY to .streamlit/secrets.toml to compare libraries with other Steam players.")
     else:
@@ -621,7 +868,7 @@ with tabs[4]:
                 else:
                     st.caption(ss.friends_msg)
             else:
-                st.caption("Sign in through Steam (sidebar) to pick from your friends list.")
+                st.caption("Sign in through Steam (Import from Steam, top right) to pick from your friends list.")
         with b:
             st.text_input("Their Steam profile", key="rival_user",
                           placeholder="Custom URL name, profile URL or SteamID64")
@@ -637,6 +884,7 @@ with tabs[4]:
             html(NEED)
         else:
             them = rv["played"]
+            their_owned = set(rv.get("owned", them))
             P2 = profile(G, them, {g: default_feats(g) for g in them})
             shared = [g for g in played if g in them]
             match = taste_match(P["aff"], P2["aff"])
@@ -660,18 +908,18 @@ with tabs[4]:
                     hm = max(max(played[g], them[g]) for g in shared)
                     body = "".join(
                         f'<div style="margin:8px 0"><div class="mh"><span>{G.loc[g]["name"]}</span>'
-                        f'<span>{played[g]}h · {them[g]}h</span></div>{two_bar(played[g] / hm * 100, them[g] / hm * 100)}</div>'
+                        f'<span>{played[g]:g}h · {them[g]:g}h</span></div>{two_bar(played[g] / hm * 100, them[g] / hm * 100)}</div>'
                         for g in sorted(shared, key=lambda g: -(played[g] + them[g]))[:10])
                 else:
-                    body = '<div class="why">No games in common (among each library\'s most-played).</div>'
+                    body = f'<div class="why">No games in common (with {MIN_HOURS:g}+ hours each).</div>'
                 html(f'<div class="card"><h2>Games you both play</h2>{legend}{body}</div>')
             c, d = st.columns(2)
             with c:
-                html(fav_list(f"{rv['name']}'s favorites you haven't played", them, played))
+                html(fav_list(f"{rv['name']}'s favorites you don't own", them, owned))
             with d:
-                html(fav_list(f"Your favorites {rv['name']} hasn't played", played, them))
-            mine = recommend(G, P, played, 70, 999, None)[:8]
-            theirs = recommend(G, P2, them, 70, 999, None)[:8]
+                html(fav_list(f"Your favorites {rv['name']} doesn't own", played, their_owned))
+            mine = recommend(G, P, owned, 70, 999, n=8)
+            theirs = recommend(G, P2, their_owned, 70, 999, n=8)
             mine_ids, their_ids = {r[4].name for r in mine}, {r[4].name for r in theirs}
             c, d = st.columns(2)
             with c:
@@ -679,5 +927,5 @@ with tabs[4]:
             with d:
                 html(rec_list(theirs, mine_ids, f"Recommended for {rv['name']}"))
             html(f'<div class="note">{rv["name"]}: {rv["n_played"]} played of {rv["n_owned"]} owned; compared on their '
-                 f'top {len(them)} catalog games by hours. Recommendations use the default 70% genre / 30% price mix and '
+                 f'{len(them)} catalog games with {MIN_HOURS:g}+ hours. Recommendations use the default 70% genre / 30% price mix and '
                  f'no budget limit.</div>')

@@ -470,6 +470,57 @@ def scene_html(key, title, n=11):
             f'<div class="ttl"><div class="realm">{t["icon"]} {t["name"]}</div><h3>{title}</h3></div></div>')
 
 
+def scene_css(keys):
+    """<style> for the mini world scenes (category cards, game pages): their fonts, particles and skylines."""
+    skies = "".join(f'.sk-{k}{{background-image:url("{_sky_uri(k)}")}}' for k in keys)
+    return f"<style>@import url('{FONT_URL}');{FX_CSS}{skies}</style>"
+
+
+# ---------------------------------------------------------------- page backdrop: a wall of game shelves
+# case colours, weighted toward the greens, blacks and blues of a used-games shop
+SPINES = ("#1e7a3c", "#15692f", "#1e7a3c", "#121417", "#1b1e22", "#121417", "#1a4f9c", "#22468a",
+          "#d8d8d2", "#9b1c22", "#c4232b", "#4b2d73", "#c9a227", "#1d6f74", "#4a5058")
+
+
+@lru_cache(maxsize=None)
+def _shelf_uri():
+    r = random.Random(17)
+    W, ROW = 1200, 250
+    o = [f'<rect width="{W}" height="{ROW * 4}" fill="#0a1017"/>']
+    for row in range(4):
+        floor = row * ROW + ROW - 16
+        x = r.randint(0, 20)
+        while x < W:
+            col = r.choice(SPINES)
+            if r.random() < .05:  # a case shelved face-out
+                w, h = r.randint(110, 140), r.randint(160, 190)
+                o.append(f'<rect x="{x}" y="{floor - h}" width="{w}" height="{h}" rx="3" fill="{col}"/>'
+                         f'<rect x="{x + 6}" y="{floor - h + 24}" width="{w - 12}" height="{h - 32}" '
+                         f'fill="{r.choice(SPINES)}" opacity=".75"/>'
+                         f'<rect x="{x}" y="{floor - h}" width="{w}" height="16" fill="#fff" opacity=".18"/>')
+                x += w + r.randint(4, 10)
+                continue
+            if r.random() < .03:  # a gap on the shelf
+                x += r.randint(20, 50)
+                continue
+            w, h = r.randint(10, 18), r.randint(178, 206)
+            o.append(f'<rect x="{x}" y="{floor - h}" width="{w}" height="{h}" fill="{col}"/>'
+                     f'<rect x="{x + 2}" y="{floor - h + r.randint(14, 40)}" width="{w - 4}" '
+                     f'height="{r.randint(50, 110)}" fill="#fff" opacity=".{r.randint(10, 22)}"/>')
+            x += w + 1
+        o.append(f'<rect x="0" y="{floor}" width="{W}" height="16" fill="#34404c"/>'
+                 f'<rect x="0" y="{floor}" width="{W}" height="3" fill="#56636f"/>')
+    svg = (f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {W} {ROW * 4}" '
+           f'preserveAspectRatio="xMidYMid slice">{"".join(o)}</svg>')
+    return "data:image/svg+xml;utf8," + quote(svg)
+
+
+def backdrop_html():
+    """Fixed, click-through page backdrop: shelves of game cases, blurred and dimmed behind the content."""
+    return (f'<style>.shelves{{background-image:url("{_shelf_uri()}")}}</style>'
+            '<div class="shelves fx-host"></div>')
+
+
 def card_vars(key):
     t = THEMES[key]
     c = t["c"]
