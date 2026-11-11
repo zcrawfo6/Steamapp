@@ -1,0 +1,52 @@
+{
+  "built_at": "2026-11-08T18:45:43+00:00",
+  "rows": 125855,
+  "with_features": 117542,
+  "vocab_size": 467,
+  "review_prior": 0.8204,
+  "flag_counts": {
+    "is_adult": 1799,
+    "is_software": 1206,
+    "is_non_game": 8683,
+    "is_duplicate_listing": 125,
+    "is_expansion": 15,
+    "is_released": 125854,
+    "online_coop": 7198,
+    "local_coop": 4656,
+    "online_pvp": 9138,
+    "local_pvp": 5196,
+    "lan": 1588,
+    "any_multiplayer": 21539
+  },
+  "config": {
+    "tag_position_decay": 0.1,
+    "genre_weight": 0.5,
+    "adult_top_k": 10,
+    "multiplayer_tag_top_k": 10,
+    "review_prior_weight": 50,
+    "tag_synonyms": {
+      "Naval Combat": "Naval",
+      "Politics": "Political",
+      "Political Sim": "Political",
+      "Party Game": "Party",
+      "Mini Golf": "Golf",
+      "Wholesome": "Cozy",
+      "Rogue-like": "Rogue-lite",
+      "Snowboarding": "Skiing",
+      "Motocross": "Motorbike"
+    },
+    "drop_tags": [
+      "Addictive",
+      "Classic",
+      "Cult Classic",
+      "Early Access",
+      "Free to Play",
+      "Great Soundtrack",
+      "Masterpiece"
+    ],
+    "drop_genres": [
+      "Early Access",
+      "Free To Play"
+    ]
+  }
+}

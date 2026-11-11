@@ -13,8 +13,8 @@ import random
 import re
 from concurrent.futures import ThreadPoolExecutor
 from html import escape
+from pathlib import Path
 
-import numpy as np
 import pandas as pd
 import requests
 import streamlit as st
@@ -23,6 +23,8 @@ import game_detail as gd
 import games_db as db
 import steam_import as S
 import themes as T
+from knn import recommend as K
+from knn.features import load_features as load_knn_features
 
 st.set_page_config(page_title="TasteForge · Find what to play next", page_icon="🎮", layout="wide",
                    initial_sidebar_state="collapsed")
@@ -258,28 +260,49 @@ def profile(G, played, feats):
     return dict(tot=tot, aff=aff, lp=lp, avg_price=math.exp(lp) - 1, n=len(played), modes=modes)
 
 
-def recommend(G, P, played, w_genre, budget, n=None):
-    """Top `n` unplayed games as (score, genre fit, price fit, best genre, row, mode fit), best first.
-    Scored column-wise: the full catalog is tens of thousands of games."""
-    pool = G[~G.index.isin(played) & (G.price <= budget)]
-    if pool.empty:
+# ---------- recommender: Rob's KNN model (knn/, from RShea42/DTSC3602_Models) ----------
+@st.cache_resource(show_spinner="Loading the recommender model...")
+def load_knn():
+    """Prebuilt tag vectors and flags for ~126k Steam games (knn/artifacts)."""
+    return load_knn_features(Path(__file__).parent / "knn" / "artifacts")
+
+
+@st.cache_data(max_entries=32, show_spinner=False)
+def knn_ranked(library: tuple, q_weight: float, dislike_weight: float, min_reviews: int) -> pd.DataFrame:
+    """The model's full list, best first, for a library of (app_id, minutes, minutes_2weeks, last_played)."""
+    lib = {a: {"minutes": m, "minutes_2weeks": m2, "last_played": lp} for a, m, m2, lp in library}
+    cfg = K.RecConfig(quality_weight=q_weight, dislike_weight=dislike_weight, min_reviews=min_reviews)
+    return K.recommend(load_knn(), lib, cfg, full=True)
+
+
+def recommend(G, owned, recency, budget, n=8, q_weight=0.5, dislike_weight=0.5, min_reviews=50):
+    """Top `n` games as (score, tag similarity, review quality, because-you-played names, row, dislike similarity).
+
+    owned: {gid: hours} for every picked game. All of them go to the model: the most-played define the taste,
+    briefly played ones (5 min - 2 h) count as dislikes, and none are ever recommended back.
+    recency: {gid: (minutes in the last 2 weeks, last played unix time)} from Steam import (missing = unknown).
+    Picks are limited to games in the app's catalog G and within `budget`."""
+    library = tuple(sorted((int(G.loc[gid].app_id), int(round(h * 60)), *map(int, recency.get(gid, (0, 0))))
+                           for gid, h in owned.items()))
+    if not any(m > 0 for _, m, _, _ in library):
         return []
-    aff = P["aff"]
-    max_a = max(aff.values(), default=0.0001)
-    w_g = w_genre / 100
-    th = sum(P["modes"].values())
-    share = {m: v / th for m, v in P["modes"].items()} if th else {}
-    gm = pool.genres.explode().map(aff).fillna(0).groupby(level=0).sum() / pool.genres.str.len() / max_a
-    d = np.log1p(pool.price) - P["lp"]
-    pm = np.exp(-(d * d) / (2 * 1.1 * 1.1))
-    q = (pool.rating - 70) / 30
-    mf = pool.modes.apply(lambda ms: min(1, sum(share.get(m, 0) for m in ms))) if share else pd.Series(.5, pool.index)
-    score = ((w_g * gm + (1 - w_g) * pm) * 0.8 + q * 0.1 + mf * 0.1).clip(0, 1)
+    try:
+        ranked = knn_ranked(library, float(q_weight), float(dislike_weight), int(min_reviews))
+    except ValueError:  # none of the played games are in the model's catalog
+        return []
+    row_of = dict(zip(G.app_id.astype(int), G.index))
     rows = []
-    for gid in score.sort_values(ascending=False, kind="stable").index[:n]:
+    for r in ranked.itertuples(index=False):
+        gid = row_of.get(int(r.appid))
+        if gid is None or gid in owned:
+            continue
         g = G.loc[gid]
-        best = max(g.genres, key=lambda x: aff.get(x, 0))
-        rows.append((float(score[gid]), float(gm[gid]), float(pm[gid]), best, g, float(mf[gid])))
+        if g.price > budget:
+            continue
+        rows.append((float(min(1.0, max(0.0, r.score))), float(r.like), float(r.quality), list(r.aligned_with),
+                     g, float(r.dislike)))
+        if len(rows) == n:
+            break
     return rows
 
 
@@ -364,12 +387,13 @@ ss.setdefault("picked", [])
 ss.setdefault("view", None)  # app_id of the game whose stats page is open
 ss.setdefault("view_why", None)
 ss.setdefault("mode", "Simple")  # Simple: just pick games. Advanced: per-game hours / modes and recommender tuning
-for k, v in (("w_genre", 70), ("budget", 60)):
+TUNE = (("q_weight", 0.5), ("dislike_w", 0.5), ("min_rev", 50), ("budget", 60))  # recommender knobs, defaults
+for k, v in TUNE:
     ss.setdefault(k, v)
 # Streamlit forgets a widget's value on any run where the widget isn't drawn. Simple mode hides the per-game and
 # tuning controls, so re-assign their values every run to keep them (Streamlit's documented workaround).
 for k in list(ss.keys()):
-    if str(k).startswith(("h_", "m_", "s_")) or k in ("w_genre", "budget"):
+    if str(k).startswith(("h_", "m_", "s_")) or k in dict(TUNE):
         ss[k] = ss[k]
 
 
@@ -387,6 +411,7 @@ def load_demo():
     for gid in random.sample(range(len(G)), random.randint(4, 10)):
         lab = G.loc[gid].label
         picks.append(lab)
+        ss.pop(f"r_{lab}", None)  # a made-up profile has no play dates
         ss[f"h_{lab}"] = float(random.choice([random.randint(3, 30), random.randint(20, 150), random.randint(100, 600)]))
         have = modes_for(G.loc[gid].genres)
         for mode in MODES:
@@ -396,7 +421,8 @@ def load_demo():
 
 
 def reset_game_state(lab):
-    """Forget a game's mode ticks / time split so they re-default from its Steam tags."""
+    """Forget a game's mode ticks / time split / play dates so they re-default from its Steam tags."""
+    ss.pop(f"r_{lab}", None)
     for mode in MODES:
         ss.pop(f"m_{lab}_{mode}", None)
         ss.pop(f"s_{lab}_{mode}", None)
@@ -407,6 +433,14 @@ def catalog_matches(games):
     by_app = dict(zip(G.app_id.astype(int), G.index))
     return [(int(by_app[g["appid"]]), min(9999.0, round(g["hours"], 1)))
             for g in sorted(games, key=lambda g: -g["hours"]) if g["appid"] in by_app]
+
+
+def catalog_recency(games):
+    """{catalog row: (minutes played in the last 2 weeks, last played unix time)} for owned games in the catalog.
+    The recommender weights recent play more (Steam reports nothing between 2 weeks and lifetime)."""
+    by_app = dict(zip(G.app_id.astype(int), G.index))
+    return {int(by_app[g["appid"]]): (g.get("minutes_2weeks", 0), g.get("last_played", 0))
+            for g in games if g["appid"] in by_app}
 
 
 def default_feats(gid):
@@ -442,6 +476,7 @@ def load_rival(source):
                         f"{MIN_HOURS:g}+ hours played.")
         return
     ss.rival = dict(sid=sid, name=name, played=their_played, owned=[gid for gid, _ in matched],
+                    hours=dict(matched), recency=catalog_recency(games),
                     n_played=sum(g["hours"] > 0 for g in games), n_owned=len(games))
 
 
@@ -473,11 +508,13 @@ def import_steam(sid=None):
         ss.steam_msg = ("warning", f"Found {len(games)} owned games, but none of them are in the catalog yet.")
         return
     picks = []
+    recency = catalog_recency(games)
     for gid, h in matched:
         lab = G.loc[gid].label
         picks.append(lab)
         ss[f"h_{lab}"] = h
         reset_game_state(lab)
+        ss[f"r_{lab}"] = recency[gid]
     ss.picked = picks
     skipped = len(games) - len(matched)
     counted = sum(h >= MIN_HOURS for _, h in matched)
@@ -590,14 +627,16 @@ with st.container(key="heromid"):
         getattr(st, msg[0])(msg[1])
     with st.container(key="why"), st.expander("How the recommender works"):
         st.markdown(
-            "Every game you add is weighted by the **hours** you put into it. From that, TasteForge builds your "
-            "player profile: which **genres and tags** your time goes to, the **price** you're comfortable "
-            "paying, and how you play (**story**, **co-op** or **PvP**).\n\n"
-            "Each game you haven't played is then scored on how well its tags match your genre taste and how close "
-            "its price sits to your habits (80%), how well players rate it (10%) and whether it fits your play "
-            "style (10%).\n\n"
-            "**Simple** mode uses sensible defaults. Switch to **Advanced** (top right) to set hours and play modes "
-            "per game, change the genre-vs-price weighting or cap the budget. "
+            "Recommendations come from a **KNN (nearest-neighbour) model** over the Steam tags of ~126k games. "
+            "Your **most-played games** (up to 15) define your taste; with **Import from Steam**, games you've "
+            "played recently count extra. Games you only tried briefly (5 minutes to 2 hours) count as "
+            "**dislikes**.\n\n"
+            "Every game you don't own is scored by how closely its tags match your closest liked games, minus "
+            "how much it looks like your dislikes, blended with **review quality** (rating and number of "
+            "reviews). The list then keeps one edition per game, mixes picks across your favorites, and limits "
+            "picks from series you already own. Each card says **which of your games** it's based on.\n\n"
+            "**Simple** mode uses sensible defaults. Switch to **Advanced** (top right) to set hours per game, "
+            "change how much reviews count, how strongly dislikes push games down, or cap the budget. "
             "Use **Import from Steam** to fill the list from your library.")
 SOURCE = (f"{len(G):,} Steam games with {MIN_REVIEWS}+ reviews, from the full Steam catalog in Supabase" if FULL_CATALOG
           else f"{len(G):,} well-reviewed Steam games from Supabase")
@@ -624,6 +663,7 @@ else:
 # only games with real time in them shape the taste profile; barely-touched ones would just add noise
 played = {gid: h for gid, h in owned.items() if h >= MIN_HOURS}
 P = profile(G, played, feats)
+recency = {gid: ss[f"r_{lab}"] for lab, gid in picked if f"r_{lab}" in ss}  # Steam imports only
 
 # ---- world for the animated scene on the open game page
 viewed = G[G.app_id == ss.view] if ss.view else G.iloc[:0]
@@ -703,14 +743,14 @@ with tabs[1]:
 
 # ----- Recommendations -----
 PRESETS = [  # quick taste shaping: (title, what it does, session key it sets, value)
-    ("More like my library", "Lean harder on the genres you play most", "w_genre", 90),
-    ("Balanced", "The default 70 / 30 genre-to-price mix", "w_genre", 70),
-    ("Match my spending", "Lean on what you usually pay for a game", "w_genre", 35),
+    ("More like my library", "Closest tag matches, reviews count less", "q_weight", 0.2),
+    ("Balanced", "The default 50 / 50 match-to-reviews mix", "q_weight", 0.5),
+    ("Popular & proven", "Favor well-reviewed, widely played games", "q_weight", 0.75),
     ("Under $20", "Hide anything pricier than $20", "budget", 20),
     ("Free only", "Only free-to-play games", "budget", 0),
     ("Any price", "Remove the budget cap", "budget", 60),
 ]
-PART_C = ("#7dd3fc", "#86efac", "#f9a8d4", "#fde047")  # genre, price, play mode, reviews
+PART_C = ("#7dd3fc", "#fde047")  # tag similarity, review quality
 
 
 def shape(key, value):
@@ -768,24 +808,29 @@ with tabs[0]:
                 with st.container(key="tune"):
                     st.markdown("##### Tune the recommender")
                     a, b = st.columns(2)
-                    a.slider("Genre ↔ Price", 0, 100, key="w_genre",
-                             help="Left leans on your price habits, right on your genre taste.")
+                    a.slider("Review quality weight", 0.0, 1.0, step=0.05, key="q_weight",
+                             help="0 = closest tag matches only, 1 = only how well-reviewed and popular a game is.")
                     b.slider("Max budget ($)", 0, 60, step=5, key="budget", help="60 means no limit.")
+                    a.slider("Avoid games like the ones you barely played", 0.0, 1.5, step=0.1, key="dislike_w",
+                             help="How hard games similar to your briefly played ones (5 min - 2 h) are pushed down.")
+                    b.slider("Minimum Steam reviews", 10, 500, step=10, key="min_rev",
+                             help="Games with fewer reviews are never recommended.")
             budget = 999 if ss.budget >= 60 else ss.budget
-            R = recommend(G, P, owned, ss.w_genre, budget, n=8)
-            scored = int((~G.index.isin(owned) & (G.price <= budget)).sum())
+            R = recommend(G, owned, recency, budget, n=8, q_weight=ss.q_weight, dislike_weight=ss.dislike_w,
+                          min_reviews=ss.min_rev)
             html(f'<div class="rhead"><div><div class="t">Recommendations</div>'
-                 f'<div class="n">Top {len(R)} of {scored:,} games scored</div></div>'
+                 f'<div class="n">Top {len(R)} picks from a KNN model over {len(load_knn().games):,} Steam games</div></div>'
                  f'<div class="lbl">Sorted by<span>Match Score</span></div></div>')
             if not R:
-                html('<div class="empty">Nothing fits that budget. Raise the max budget.</div>')
-            aff, w_g = P["aff"], ss.w_genre / 100
+                html('<div class="empty">Nothing fits. Raise the max budget or lower the minimum reviews.</div>')
+            aff, qw = P["aff"], ss.q_weight
             shots = screenshots([int(r[4].app_id) for r in R])
-            for i, (score, gm, pm, best, g, mf) in enumerate(R):
+            for i, (score, like, quality, because, g, dislike) in enumerate(R):
                 aid = int(g.app_id)
                 gw = T.THEMES[T.theme_for(g.genres)]
                 shared = sorted((x for x in g.genres if x in aff), key=lambda x: -aff[x])
                 fresh = [x for x in g.genres if x not in aff]
+                best = shared[0] if shared else None
                 modes = "".join(f'<span class="chip {"sel" if P["modes"].get(m) else ""}">{MODES[m][0]} {MODES[m][1]}</span>'
                                 for m in modes_for(g.genres))
                 strip = "".join(f'<img src="{escape(u)}" loading="lazy" alt="">' for u in shots.get(aid, []))
@@ -795,26 +840,31 @@ with tabs[0]:
                     <div class="cap" style="background-image:url('{capsule(aid)}')"></div>
                     <div><h3>{escape(g['name'])}<span class="pct">{round(score * 100)}% match</span>
                     <span class="mi" title="{gw['name']}">{gw['icon']}</span></h3>
-                    <div>{chips([best]) if best in aff else ""}{'<span class="badge">Best match</span>' if i == 0 else ""}</div></div>
+                    <div>{chips([best]) if best else ""}{'<span class="badge">Best match</span>' if i == 0 else ""}</div></div>
                     <div class="rev">Steam reviews <b>{g.rating:.0f}% positive</b>{bar(g.rating)}
                     {f"{short(n_rev)} total" if pd.notna(n_rev) else ""}</div></div>
                     {f'<div class="shots">{strip}</div>' if strip else ""}
                     <div class="lbl">Match receipt</div>
                     <div class="receipt">
+                    <div style="grid-column:1/-1"><div class="lbl"><span>Because you played</span>
+                    <b>{round(like * 100)}% tag similarity</b></div>
+                    {chips(because, True) or '<span class="why">Your taste overall</span>'}</div>
                     <div><div class="lbl"><span>Tags you play</span><b>{len(shared)} shared</b></div>
                     {chips(shared[:6], True) or '<span class="why">None of your tags</span>'}</div>
                     <div><div class="lbl"><span>New to you</span></div>
                     {chips(fresh[:6]) or '<span class="why">Nothing new here</span>'}</div>
-                    <div><div class="lbl"><span>Price</span><b>{round(pm * 100)}% fit</b></div>
+                    <div><div class="lbl"><span>Price</span></div>
                     <span class="chip sel">{fmt(g.price)}</span><span class="why"> you usually pay about {fmt(round(P['avg_price'], 2))}</span></div>
-                    <div><div class="lbl"><span>Play modes</span><b>{round(mf * 100)}% fit</b></div>{modes}</div>
+                    <div><div class="lbl"><span>Play modes</span></div>{modes}</div>
                     </div></div>""")
                     with st.expander("Expand analysis"):
-                        html(analysis_html(score, [("Genre fit", gm, w_g * .8), ("Price fit", pm, (1 - w_g) * .8),
-                                                   ("Play mode fit", mf, .1),
-                                                   ("Review quality", min(1, max(0, (g.rating - 70) / 30)), .1)]))
+                        html(analysis_html(score, [("Tag similarity", like, 1 - qw), ("Review quality", quality, qw)]))
+                        if dislike > 0:
+                            html(f'<div class="why">Lowered by {round(ss.dislike_w * (1 - qw) * dislike * 100)} points: '
+                                 f'{round(dislike * 100)}% similar to games you barely played.</div>')
                         st.button(f"📊  See full stats for {g['name']}  →", key=f"view_{aid}", use_container_width=True,
-                                  on_click=open_game, args=(aid, dict(score=score, gm=gm, pm=pm, mf=mf, best=best)))
+                                  on_click=open_game, args=(aid, dict(score=score, like=like, quality=quality,
+                                                                      because=because)))
 
 # ----- Compare -----
 YOU_C, THEM_C = "var(--accent)", "#b48cff"
@@ -835,7 +885,7 @@ def taste_match(a, b):
 
 def rec_list(rows, other_ids, who):
     out = ""
-    for score, gm, pm, best, g, mf in rows:
+    for score, *_, g, _ in rows:
         both = g.name in other_ids
         tag = '<span class="chip sel">for both of you</span>' if both else ""
         out += (f'<div class="todo"><span>{g["name"]} {tag}</span>'
@@ -918,8 +968,8 @@ with tabs[2]:
                 html(fav_list(f"{rv['name']}'s favorites you don't own", them, owned))
             with d:
                 html(fav_list(f"Your favorites {rv['name']} doesn't own", played, their_owned))
-            mine = recommend(G, P, owned, 70, 999, n=8)
-            theirs = recommend(G, P2, their_owned, 70, 999, n=8)
+            mine = recommend(G, owned, recency, 999, n=8)
+            theirs = recommend(G, rv.get("hours", them), rv.get("recency", {}), 999, n=8)
             mine_ids, their_ids = {r[4].name for r in mine}, {r[4].name for r in theirs}
             c, d = st.columns(2)
             with c:

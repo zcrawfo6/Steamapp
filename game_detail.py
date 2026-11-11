@@ -75,9 +75,10 @@ def csv_tags() -> dict:
 def _why_html(why: dict | None) -> str:
     if not why:
         return ""
+    because = ", ".join(f"<b>{escape(str(x))}</b>" for x in why.get("because") or ())
     return (f'<div class="why" style="margin-top:10px"><b>Why it was recommended:</b> {round(why["score"] * 100)}% match · '
-            f'genre fit {round(why["gm"] * 100)}% (you play lots of <b>{escape(str(why["best"]))}</b>) · '
-            f'price fit {round(why["pm"] * 100)}% · play-style fit {round(why["mf"] * 100)}%</div>')
+            + (f'because you played {because} · ' if because else "")
+            + f'tag similarity {round(why["like"] * 100)}% · review quality {round(why["quality"] * 100)}%</div>')
 
 
 def _show_basic(g, why: dict | None):

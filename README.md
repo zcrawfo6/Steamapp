@@ -12,6 +12,14 @@ Kaggle Steam games CSV -> `upload_to_supabase.py` -> Supabase `games` table -> `
 4. Optional, for **Import from Steam**: get a Steam Web API key at https://steamcommunity.com/dev/apikey and add `STEAM_API_KEY = "..."` to the same `secrets.toml`
 5. `streamlit run app.py`
 
+## Recommender (KNN model by RShea42)
+Recommendations come from the KNN recommender in [RShea42/DTSC3602_Models](https://github.com/RShea42/DTSC3602_Models),
+copied into `knn/` with its prebuilt `knn/artifacts/` (see `knn/README.md`). A player's most-played games
+(recency weighted when imported from Steam) define their taste, and briefly played games count as dislikes. Every
+unowned game is scored by tag similarity to the liked games, minus similarity to the dislikes, blended with review
+quality. `app.py` keeps the cards, Player Profile and Compare UI and filters the model's list to the catalog and budget.
+Advanced mode exposes the review-quality weight, dislike strength and minimum reviews.
+
 ## Import from Steam
 Click **Sign in through Steam** in the sidebar. Steam's own login page (OpenID) sends you back with your Steam ID, which the app verifies with Steam, then it pulls your library with `GetOwnedGames` (`steam_import.py`) and loads your most-played games that are in the catalog (up to 40) with their lifetime hours. The app never sees your Steam password. Your profile's "Game details" must be public.
 

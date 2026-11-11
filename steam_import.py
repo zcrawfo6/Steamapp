@@ -101,7 +101,8 @@ def resolve_steamid(key: str, text: str) -> str:
 
 
 def owned_games(key: str, steamid: str) -> list[dict]:
-    """Every game the account owns, with `appid`, `name` and `hours` (lifetime playtime)."""
+    """Every game the account owns, with `appid`, `name`, `hours` (lifetime playtime) and, for the recommender,
+    `minutes` (lifetime), `minutes_2weeks` (last two weeks) and `last_played` (unix time, 0 = unknown)."""
     r = requests.get(f"{API}/IPlayerService/GetOwnedGames/v1/", timeout=30, params={
         "key": key, "steamid": steamid, "include_appinfo": 1, "include_played_free_games": 1})
     if r.status_code == 403:
@@ -113,4 +114,6 @@ def owned_games(key: str, steamid: str) -> list[dict]:
         raise SteamError("Couldn't read this profile's games. In Steam, set Privacy Settings -> "
                          "'Game details' to Public, then try again.")
     return [{"appid": g["appid"], "name": g.get("name", str(g["appid"])),
-             "hours": g.get("playtime_forever", 0) / 60} for g in res["games"]]
+             "hours": g.get("playtime_forever", 0) / 60, "minutes": g.get("playtime_forever", 0),
+             "minutes_2weeks": g.get("playtime_2weeks", 0), "last_played": g.get("rtime_last_played", 0)}
+            for g in res["games"]]
