@@ -1,9 +1,10 @@
 """EASE-safe recommender (Juan's model), adapted for TasteForge.
 
-Source: RShea42/DTSC3602_Models @ e8f7531, Steam_EASE_Safe_Recommender/model/recommender.py. The model, the
+Source: RShea42/DTSC3602_Models @ 82bf4bc, Steam_EASE_Safe_Recommender/model/recommender.py. The model, the
 safe re-rank and its settings are unchanged. Changes for this app:
 - Steam lookups and .env reading removed (app.py / steam_import.py already do that).
-- Data files are read from one folder (EASE_DATA_DIR, default ease/artifacts) instead of C:/Users/juant/...
+- Data folders come from STEAMREC_ARTIFACTS and STEAMREC_DATA, the same settings as Juan's app (82bf4bc);
+  both default to ease/artifacts.
 - The "Try something new" row is not built.
 - Each pick also carries its soft-fail flags and how much each of the player's games pushed it up.
 
@@ -11,11 +12,11 @@ Model: EASE (Steck 2019) item-to-item weights B learned from which games players
 scores = sum of B's rows for the games they played. "Safe" re-rank of EASE's top 50:
     z(score) - a x like_quit - b x short_game - c x negative_reviews     (a, b, c in rerank_choice.json)
 
-Files needed in the data folder (not in git; ease.npz alone is ~330 MB):
-    ease.npz                 B (float16) + app_ids                    model/build_ease.py
-    items.parquet            per-game playtime quantiles (q)           model/build_model.py
-    games.parquet            Juan's cleaned catalog (data_clean/)      main project's cleaning scripts
-    team_eval/games.parquet  shared team catalog for the flags         Supabase bucket "team-eval"
+Files needed (not in git; ease.npz alone is ~330 MB; see ease/README.md for the Supabase download):
+    STEAMREC_ARTIFACTS/ease.npz                 B (float16) + app_ids          model/build_ease.py
+    STEAMREC_ARTIFACTS/items.parquet            per-game playtime quantiles    model/build_model.py
+    STEAMREC_DATA/games.parquet                 Juan's cleaned catalog
+    STEAMREC_DATA/team_eval/games.parquet       shared team catalog for the flags
 """
 import json
 from pathlib import Path
@@ -28,7 +29,8 @@ from .flags import NEG, tag_matrix
 
 HERE = Path(__file__).resolve().parent
 SAFE = json.loads((HERE / "rerank_choice.json").read_text())  # a_quit, b_short, c_negative
-FILES = ("ease.npz", "items.parquet", "games.parquet", "team_eval/games.parquet")
+ARTIFACT_FILES = ("ease.npz", "items.parquet")                    # in STEAMREC_ARTIFACTS
+DATA_FILES = ("games.parquet", "team_eval/games.parquet")         # in STEAMREC_DATA
 FLAG_NAMES = {"quit": "Like games you quit", "short": "Short (median 2h or less)", "neg": "Negative Steam reviews"}
 
 # tags that describe format or business model, not taste: not shown as a pick's tags
@@ -39,9 +41,10 @@ BROAD = {t.lower() for t in (
     "Beautiful", "Funny", "Cute", "Colorful", "Relaxing", "Utilities", "Software")}
 
 
-def missing_files(data_dir) -> list[str]:
-    d = Path(data_dir)
-    return [f for f in FILES if not (d / f).exists()]
+def missing_files(artifacts_dir, data_dir) -> list[str]:
+    """Full paths of the required files that don't exist."""
+    paths = [Path(artifacts_dir) / f for f in ARTIFACT_FILES] + [Path(data_dir) / f for f in DATA_FILES]
+    return [str(p) for p in paths if not p.exists()]
 
 
 def live_prices(app_ids, cc="us"):
@@ -66,13 +69,13 @@ def live_prices(app_ids, cc="us"):
 
 
 class Recommender:
-    def __init__(self, data_dir):
-        D = Path(data_dir)
-        z = np.load(D / "ease.npz")
+    def __init__(self, artifacts_dir, data_dir):
+        A, D = Path(artifacts_dir), Path(data_dir)
+        z = np.load(A / "ease.npz")
         self.B = z["B"]                                   # float16, rows = played game, columns = candidate game
         self.app_ids = z["app_ids"]
         self.idx = {int(a): i for i, a in enumerate(self.app_ids)}
-        it = pd.read_parquet(D / "items.parquet")
+        it = pd.read_parquet(A / "items.parquet")
         self.q = {int(a): np.asarray(q) for a, q in zip(it.app_id, it.q) if q is not None}
         g = pd.read_parquet(D / "games.parquet", columns=["app_id", "title", "tags", "genres", "price_regular", "recommendable",
                                                           "header_image", "steam_positive", "steam_negative", "positive_ratio",

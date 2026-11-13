@@ -1,5 +1,5 @@
 """The team's soft-fail flag definitions, copied unchanged from DTSC3602_Models/Steam_EASE_Safe_Recommender/team_eval/evaluate.py
-(RShea42/DTSC3602_Models @ e8f7531), so the app flags games exactly the way the shared scoring does."""
+(RShea42/DTSC3602_Models @ 82bf4bc), so the app flags games exactly the way the shared scoring does."""
 import numpy as np
 import pandas as pd
 import scipy.sparse as sp

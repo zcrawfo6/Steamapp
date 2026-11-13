@@ -4,7 +4,8 @@ Settings (.streamlit/secrets.toml or the environment):
   GAMES_SUPABASE_URL + GAMES_SUPABASE_KEY  full Steam catalog (`games` table, see games_db.py) for the recommender
   MODAL_API_URL      Modal API: the Genre Success tab, and the old 3,000-game catalog when the two above are unset
   GAMES_MIN_REVIEWS  catalog floor, default 10 (below that Steam shows no rating to score a game on)
-  EASE_DATA_DIR      folder with the EASE-safe model files (default ease/artifacts; see ease/README.md)
+  STEAMREC_ARTIFACTS folder with ease.npz + items.parquet (default ease/artifacts; see ease/README.md)
+  STEAMREC_DATA      folder with games.parquet + team_eval/games.parquet (default ease/artifacts)
 Layout: a centered search-first page over a dimmed game-shelf backdrop, with Steam import and a Simple / Advanced
 mode switch in the top right. Category cards and game pages get an animated world built from their tags (themes.py).
 """
@@ -46,7 +47,10 @@ STEAM_KEY = setting("STEAM_API_KEY")
 # Where Steam sends people back after signing in: this app's own address
 APP_URL = setting("APP_URL") or "http://localhost:8501/"
 MIN_HOURS = 2.5  # games with fewer hours stay in the library (never recommended) but don't shape the taste profile
-EASE_DIR = setting("EASE_DATA_DIR") or os.path.join(os.path.dirname(os.path.abspath(__file__)), "ease", "artifacts")
+_EASE_DEFAULT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ease", "artifacts")
+# same settings as Juan's app, so one copy of the Supabase download works for both
+STEAMREC_ARTIFACTS = str(setting("STEAMREC_ARTIFACTS") or _EASE_DEFAULT)
+STEAMREC_DATA = str(setting("STEAMREC_DATA") or _EASE_DEFAULT)
 
 # What a player can track per game. A mode is offered when the game's Steam tags say it has one.
 MODES = {"story": ("📖", "Story / Campaign"), "coop": ("🤝", "Co-op (PvE)"), "pvp": ("⚔️", "PvP")}
@@ -264,7 +268,7 @@ def profile(G, played, feats):
 @st.cache_resource(show_spinner="Loading the EASE-safe model (~330 MB, first time only)...")
 def ease_model():
     """Juan's EASE-safe recommender (ease/recommender.py), loaded once per server. None when its files are missing."""
-    return None if E.missing_files(EASE_DIR) else E.Recommender(EASE_DIR)
+    return None if E.missing_files(STEAMREC_ARTIFACTS, STEAMREC_DATA) else E.Recommender(STEAMREC_ARTIFACTS, STEAMREC_DATA)
 
 
 @st.cache_data(ttl=3600, show_spinner="Finding games players like you went on to enjoy...")
@@ -751,10 +755,10 @@ def analysis_html(c) -> str:
             f'<div><div class="lbl">Safe check</div>{flags}</div></div>')
 
 
-EASE_MISSING = E.missing_files(EASE_DIR)
-MISSING_HTML = (f'<div class="empty">The EASE-safe model files are missing from <code>{escape(EASE_DIR)}</code>: '
-                f'{", ".join(EASE_MISSING)}. See <code>ease/README.md</code> for where to get them, or set '
-                f'EASE_DATA_DIR in .streamlit/secrets.toml.</div>')
+EASE_MISSING = E.missing_files(STEAMREC_ARTIFACTS, STEAMREC_DATA)
+MISSING_HTML = (f'<div class="empty">The EASE-safe model files are missing: '
+                f'{"<br>".join(f"<code>{escape(p)}</code>" for p in EASE_MISSING)}<br>See <code>ease/README.md</code> '
+                f'to download them from Supabase, or set STEAMREC_ARTIFACTS / STEAMREC_DATA.</div>')
 
 with tabs[0]:
     if ss.view:

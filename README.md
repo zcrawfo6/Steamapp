@@ -11,7 +11,7 @@ Kaggle Steam games CSV -> `upload_to_supabase.py` -> Supabase `games` table -> `
 2. `pip install -r requirements.txt`
 3. Create `.streamlit/secrets.toml` containing: `MODAL_API_URL = "https://zcrawfo6--steam-games-api-query.us-east.modal.run"`
 4. Optional, for **Import from Steam**: get a Steam Web API key at https://steamcommunity.com/dev/apikey and add `STEAM_API_KEY = "..."` to the same `secrets.toml`
-5. Put the EASE-safe model files in `ease/artifacts/` (or set `EASE_DATA_DIR`); see `ease/README.md`
+5. Put the EASE-safe model files in `ease/artifacts/` (or set `STEAMREC_ARTIFACTS` / `STEAMREC_DATA`); see `ease/README.md` for the Supabase download
 6. `streamlit run app.py`
 
 ## Import from Steam
