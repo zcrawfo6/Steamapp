@@ -4,6 +4,7 @@ Settings (.streamlit/secrets.toml or the environment):
   GAMES_SUPABASE_URL + GAMES_SUPABASE_KEY  full Steam catalog (`games` table, see games_db.py) for the recommender
   MODAL_API_URL      Modal API: the Genre Success tab, and the old 3,000-game catalog when the two above are unset
   GAMES_MIN_REVIEWS  catalog floor, default 10 (below that Steam shows no rating to score a game on)
+  EASE_DATA_DIR      folder with the EASE-safe model files (default ease/artifacts; see ease/README.md)
 Layout: a centered search-first page over a dimmed game-shelf backdrop, with Steam import and a Simple / Advanced
 mode switch in the top right. Category cards and game pages get an animated world built from their tags (themes.py).
 """
@@ -21,6 +22,7 @@ import streamlit as st
 
 import game_detail as gd
 import games_db as db
+from ease import recommender as E
 import steam_import as S
 import themes as T
 
@@ -44,6 +46,7 @@ STEAM_KEY = setting("STEAM_API_KEY")
 # Where Steam sends people back after signing in: this app's own address
 APP_URL = setting("APP_URL") or "http://localhost:8501/"
 MIN_HOURS = 2.5  # games with fewer hours stay in the library (never recommended) but don't shape the taste profile
+EASE_DIR = setting("EASE_DATA_DIR") or os.path.join(os.path.dirname(os.path.abspath(__file__)), "ease", "artifacts")
 
 # What a player can track per game. A mode is offered when the game's Steam tags say it has one.
 MODES = {"story": ("📖", "Story / Campaign"), "coop": ("🤝", "Co-op (PvE)"), "pvp": ("⚔️", "PvP")}
@@ -258,29 +261,25 @@ def profile(G, played, feats):
     return dict(tot=tot, aff=aff, lp=lp, avg_price=math.exp(lp) - 1, n=len(played), modes=modes)
 
 
-def recommend(G, P, played, w_genre, budget, n=None):
-    """Top `n` unplayed games as (score, genre fit, price fit, best genre, row, mode fit), best first.
-    Scored column-wise: the full catalog is tens of thousands of games."""
-    pool = G[~G.index.isin(played) & (G.price <= budget)]
-    if pool.empty:
-        return []
-    aff = P["aff"]
-    max_a = max(aff.values(), default=0.0001)
-    w_g = w_genre / 100
-    th = sum(P["modes"].values())
-    share = {m: v / th for m, v in P["modes"].items()} if th else {}
-    gm = pool.genres.explode().map(aff).fillna(0).groupby(level=0).sum() / pool.genres.str.len() / max_a
-    d = np.log1p(pool.price) - P["lp"]
-    pm = np.exp(-(d * d) / (2 * 1.1 * 1.1))
-    q = (pool.rating - 70) / 30
-    mf = pool.modes.apply(lambda ms: min(1, sum(share.get(m, 0) for m in ms))) if share else pd.Series(.5, pool.index)
-    score = ((w_g * gm + (1 - w_g) * pm) * 0.8 + q * 0.1 + mf * 0.1).clip(0, 1)
-    rows = []
-    for gid in score.sort_values(ascending=False, kind="stable").index[:n]:
-        g = G.loc[gid]
-        best = max(g.genres, key=lambda x: aff.get(x, 0))
-        rows.append((float(score[gid]), float(gm[gid]), float(pm[gid]), best, g, float(mf[gid])))
-    return rows
+@st.cache_resource(show_spinner="Loading the EASE-safe model (~330 MB, first time only)...")
+def ease_model():
+    """Juan's EASE-safe recommender (ease/recommender.py), loaded once per server. None when its files are missing."""
+    return None if E.missing_files(EASE_DIR) else E.Recommender(EASE_DIR)
+
+
+@st.cache_data(ttl=3600, show_spinner="Finding games players like you went on to enjoy...")
+def _ease_recs(library: tuple, owned: tuple, budget, n: int):
+    return ease_model().recommend(list(library), owned=list(owned), n=n,
+                                  max_price=None if budget >= 999 else budget)
+
+
+def recommend(hours, budget=999, n=8):
+    """EASE-safe picks for a library {catalog row: hours}: a list of card dicts (ease/recommender.py), best first,
+    or None when none of the games are known to the model. Every library game counts (EASE input is played or
+    not), and the under-2-hour ones also feed the like-quit flag. Results are cached: picks call the Steam store."""
+    library = tuple(sorted((int(G.loc[gid].app_id), int(round(h * 60))) for gid, h in hours.items()))
+    out = _ease_recs(library, tuple(a for a, _ in library), budget, n)
+    return None if out is None else out["for_you"]
 
 
 def radar(entries):
@@ -364,12 +363,11 @@ ss.setdefault("picked", [])
 ss.setdefault("view", None)  # app_id of the game whose stats page is open
 ss.setdefault("view_why", None)
 ss.setdefault("mode", "Simple")  # Simple: just pick games. Advanced: per-game hours / modes and recommender tuning
-for k, v in (("w_genre", 70), ("budget", 60)):
-    ss.setdefault(k, v)
+ss.setdefault("budget", 60)
 # Streamlit forgets a widget's value on any run where the widget isn't drawn. Simple mode hides the per-game and
 # tuning controls, so re-assign their values every run to keep them (Streamlit's documented workaround).
 for k in list(ss.keys()):
-    if str(k).startswith(("h_", "m_", "s_")) or k in ("w_genre", "budget"):
+    if str(k).startswith(("h_", "m_", "s_")) or k == "budget":
         ss[k] = ss[k]
 
 
@@ -441,7 +439,7 @@ def load_rival(source):
         ss.rival_msg = (f"{name} owns {len(games)} games, but none of the ones in the catalog have "
                         f"{MIN_HOURS:g}+ hours played.")
         return
-    ss.rival = dict(sid=sid, name=name, played=their_played, owned=[gid for gid, _ in matched],
+    ss.rival = dict(sid=sid, name=name, played=their_played, owned=[gid for gid, _ in matched], hours=dict(matched),
                     n_played=sum(g["hours"] > 0 for g in games), n_owned=len(games))
 
 
@@ -590,14 +588,18 @@ with st.container(key="heromid"):
         getattr(st, msg[0])(msg[1])
     with st.container(key="why"), st.expander("How the recommender works"):
         st.markdown(
-            "Every game you add is weighted by the **hours** you put into it. From that, TasteForge builds your "
-            "player profile: which **genres and tags** your time goes to, the **price** you're comfortable "
-            "paying, and how you play (**story**, **co-op** or **PvP**).\n\n"
-            "Each game you haven't played is then scored on how well its tags match your genre taste and how close "
-            "its price sits to your habits (80%), how well players rate it (10%) and whether it fits your play "
-            "style (10%).\n\n"
-            "**Simple** mode uses sensible defaults. Switch to **Advanced** (top right) to set hours and play modes "
-            "per game, change the genre-vs-price weighting or cap the budget. "
+            "Recommendations come from **EASE-safe**, a collaborative-filtering model trained on the libraries of "
+            "thousands of Steam players. It recommends games that **players who played the same games as you went "
+            "on to play**, and names which of your games pushed each pick up.\n\n"
+            "**EASE** (Embarrassingly Shallow Autoencoder) learns how strongly each game predicts every other game. "
+            "Your scores are the sum of those links from every game you've played. The **safe** step then re-ranks "
+            "the top 50 so likely misses move down (they aren't removed): games whose tags look more like the games "
+            "you quit in under 2 hours than the ones you kept playing, games most people finish in 2 hours or less, "
+            "and games with negative Steam reviews.\n\n"
+            "The model only knows games that 100+ players in its training data played (about 13,000), mostly from "
+            "2017 to 2023, so very new or niche games won't be recommended yet.\n\n"
+            "Your **Player Profile** (genres, prices, play styles) is still built from your hours. Switch to "
+            "**Advanced** (top right) to set hours per game or cap the budget. "
             "Use **Import from Steam** to fill the list from your library.")
 SOURCE = (f"{len(G):,} Steam games with {MIN_REVIEWS}+ reviews, from the full Steam catalog in Supabase" if FULL_CATALOG
           else f"{len(G):,} well-reviewed Steam games from Supabase")
@@ -702,15 +704,15 @@ with tabs[1]:
                  f'<div class="note">Hours and how each game\'s time splits between story, co-op and PvP.</div></div>')
 
 # ----- Recommendations -----
-PRESETS = [  # quick taste shaping: (title, what it does, session key it sets, value)
-    ("More like my library", "Lean harder on the genres you play most", "w_genre", 90),
-    ("Balanced", "The default 70 / 30 genre-to-price mix", "w_genre", 70),
-    ("Match my spending", "Lean on what you usually pay for a game", "w_genre", 35),
-    ("Under $20", "Hide anything pricier than $20", "budget", 20),
-    ("Free only", "Only free-to-play games", "budget", 0),
-    ("Any price", "Remove the budget cap", "budget", 60),
+PRESETS = [  # quick shaping: (title, what it does, budget it sets)
+    ("Any price", "No budget cap", 60),
+    ("Under $20", "Hide anything pricier than $20", 20),
+    ("Under $10", "Hide anything pricier than $10", 10),
+    ("Free only", "Only free-to-play games", 0),
 ]
-PART_C = ("#7dd3fc", "#86efac", "#f9a8d4", "#fde047")  # genre, price, play mode, reviews
+FLAG_HELP = {"quit": "its tags look more like the games you quit in under 2 hours than the ones you kept playing",
+             "short": "most players finish it in 2 hours or less",
+             "neg": "its Steam reviews are Mostly Negative or worse"}
 
 
 def shape(key, value):
@@ -722,99 +724,104 @@ def short(n) -> str:
     return f"{n / 1e6:.1f}M" if n >= 1e6 else f"{n / 1e3:.0f}k" if n >= 1e4 else f"{n / 1e3:.1f}k" if n >= 1e3 else str(n)
 
 
-def strength(v) -> str:
-    return "Strong" if v >= .66 else "Moderate" if v >= .33 else "Light"
-
-
 def chips(tags, sel=False) -> str:
     return "".join(f'<span class="chip {"sel" if sel else ""}">{escape(str(x))}</span>' for x in tags)
 
 
-def analysis_html(score, parts) -> str:
-    """Score ring + per-signal bars. parts: (name, fit 0-1, weight 0-1), in PART_C order."""
-    stops, at = [], 0.0
-    for (_, fit, w), c in zip(parts, PART_C):
-        stops.append(f"{c} {at:.1f}% {at + fit * w * 100:.1f}%")
-        at += fit * w * 100
-    stops.append(f"#172533 {at:.1f}% 100%")
-    legend = "".join(f'<div class="leg"><span><i class="dot" style="background:{c}"></i>{name}</span>'
-                     f'<b>{strength(fit)}</b></div>' for (name, fit, _), c in zip(parts, PART_C))
-    bars = "".join(
-        f'<div class="mode"><div class="mh"><span><i class="dot" style="background:{c}"></i>{name}</span>'
-        f'<span>weight {round(w * 100)}% / fit {round(fit * 100)}%</span></div>'
-        f'<div class="bar"><i style="width:{fit * 100:.0f}%;--ca:{c};--ca2:{c}"></i></div></div>'
-        for (name, fit, w), c in zip(parts, PART_C))
-    return (f'<div class="ana"><div><div class="lbl">Score composition</div><div class="ringrow">'
-            f'<div class="ring" style="background:conic-gradient({",".join(stops)})"><b>{round(score * 100)}%</b></div>'
-            f'<div style="flex:1">{legend}</div></div></div>'
-            f'<div><div class="lbl">Fit by signal</div>{bars}</div></div>')
+def price_html(c) -> str:
+    if c["price_text"] is None:
+        return '<span class="why">Price unknown</span>'
+    sale = (f'<span class="why"> was ${c["price_initial"]:.2f} (-{c["discount"]}%)</span>'
+            if c.get("discount") and c.get("price_initial") else "")
+    return f'<span class="chip sel">{escape(c["price_text"])}</span>{sale}'
 
+
+def analysis_html(c) -> str:
+    """Why EASE picked this game: how much each of the player's games pushed it up, plus the safe re-rank's flags."""
+    contrib = c["contrib"]
+    mx = max((v for _, v in contrib), default=1) or 1
+    bars = "".join(
+        f'<div class="mode"><div class="mh"><span>{escape(t)}</span><span>{round(v / mx * 100)}%</span></div>'
+        f'{bar(v / mx * 100)}</div>' for t, v in contrib) or '<div class="why">No single game stands out.</div>'
+    flags = "".join(f'<div class="why">⚠️ <b>{E.FLAG_NAMES[f]}</b>: {FLAG_HELP[f]}, so it was moved down.</div>'
+                    for f in c["flags"]) or '<div class="why">✅ No soft-fail flags: not like the games you quit, '\
+                                            'not a 2-hour game, and not negatively reviewed.</div>'
+    return (f'<div class="ana"><div><div class="lbl">Your games behind this pick</div>{bars}'
+            f'<div class="note">Relative pull from each game you played, strongest = 100%.</div></div>'
+            f'<div><div class="lbl">Safe check</div>{flags}</div></div>')
+
+
+EASE_MISSING = E.missing_files(EASE_DIR)
+MISSING_HTML = (f'<div class="empty">The EASE-safe model files are missing from <code>{escape(EASE_DIR)}</code>: '
+                f'{", ".join(EASE_MISSING)}. See <code>ease/README.md</code> for where to get them, or set '
+                f'EASE_DATA_DIR in .streamlit/secrets.toml.</div>')
 
 with tabs[0]:
     if ss.view:
         gd.show(ss.view, ss.view_why, close_game, basic=viewed.iloc[0] if len(viewed) else None)
     elif not played:
         html(NEED)
+    elif EASE_MISSING:
+        html(MISSING_HTML)
     else:
         main, side = st.columns([3.2, 1], gap="medium")
         with side, st.container(key="shape"):
-            st.markdown("##### Quick taste shaping")
-            for title, desc, key, val in PRESETS:
-                st.button(title, key=f"shape_{title}", use_container_width=True, on_click=shape, args=(key, val),
-                          type="primary" if ss[key] == val else "secondary")
+            st.markdown("##### Budget")
+            for title, desc, val in PRESETS:
+                st.button(title, key=f"shape_{title}", use_container_width=True, on_click=shape, args=("budget", val),
+                          type="primary" if ss.budget == val else "secondary")
                 html(f'<div class="pd">{desc}</div>')
         with main:
             if adv:
                 with st.container(key="tune"):
                     st.markdown("##### Tune the recommender")
-                    a, b = st.columns(2)
-                    a.slider("Genre ↔ Price", 0, 100, key="w_genre",
-                             help="Left leans on your price habits, right on your genre taste.")
-                    b.slider("Max budget ($)", 0, 60, step=5, key="budget", help="60 means no limit.")
+                    st.slider("Max budget ($)", 0, 60, step=5, key="budget",
+                              help="Checked against the current Steam store price. 60 means no limit.")
             budget = 999 if ss.budget >= 60 else ss.budget
-            R = recommend(G, P, owned, ss.w_genre, budget, n=8)
-            scored = int((~G.index.isin(owned) & (G.price <= budget)).sum())
+            R = recommend(owned, budget, n=8)
+            if R is None:
+                html('<div class="empty">None of your games are known to the EASE model yet (it learned from games '
+                     '100+ players in its data played, mostly 2017 to 2023). Add a few more popular games.</div>')
+                R = []
             html(f'<div class="rhead"><div><div class="t">Recommendations</div>'
-                 f'<div class="n">Top {len(R)} of {scored:,} games scored</div></div>'
-                 f'<div class="lbl">Sorted by<span>Match Score</span></div></div>')
-            if not R:
+                 f'<div class="n">Top {len(R)} of {ease_model().n_candidates:,} games the EASE-safe model can recommend</div></div>'
+                 f'<div class="lbl">Sorted by<span>EASE-safe rank</span></div></div>')
+            if not R and budget < 999:
                 html('<div class="empty">Nothing fits that budget. Raise the max budget.</div>')
-            aff, w_g = P["aff"], ss.w_genre / 100
-            shots = screenshots([int(r[4].app_id) for r in R])
-            for i, (score, gm, pm, best, g, mf) in enumerate(R):
-                aid = int(g.app_id)
-                gw = T.THEMES[T.theme_for(g.genres)]
-                shared = sorted((x for x in g.genres if x in aff), key=lambda x: -aff[x])
-                fresh = [x for x in g.genres if x not in aff]
-                modes = "".join(f'<span class="chip {"sel" if P["modes"].get(m) else ""}">{MODES[m][0]} {MODES[m][1]}</span>'
-                                for m in modes_for(g.genres))
+            aff = P["aff"]
+            shots = screenshots([c["app_id"] for c in R])
+            for i, c in enumerate(R):
+                aid = c["app_id"]
+                gw = T.THEMES[T.theme_for(c["tags"])]
+                mine = [t for t in c["tags"] if t in aff]
+                fresh = [t for t in c["tags"] if t not in aff]
+                flags = [E.FLAG_NAMES[f] for f in c["flags"]]
                 strip = "".join(f'<img src="{escape(u)}" loading="lazy" alt="">' for u in shots.get(aid, []))
-                n_rev = g.get("reviews")
+                rev = (f'Steam reviews <b>{c["rating"]}% positive</b>{bar(c["rating"])}{short(c["reviews"])} total'
+                       if c["rating"] is not None else "No Steam rating yet")
                 with st.container(key=f"rec_{aid}"):
                     html(f"""<div class="rec"><div class="top">
-                    <div class="cap" style="background-image:url('{capsule(aid)}')"></div>
-                    <div><h3>{escape(g['name'])}<span class="pct">{round(score * 100)}% match</span>
+                    <div class="cap" style="background-image:url('{escape(c["image"] or capsule(aid))}')"></div>
+                    <div><h3><a href="{c['store_url']}" target="_blank" style="color:inherit;text-decoration:none">{escape(c['title'])}</a>
+                    <span class="pct">#{i + 1} pick</span>
                     <span class="mi" title="{gw['name']}">{gw['icon']}</span></h3>
-                    <div>{chips([best]) if best in aff else ""}{'<span class="badge">Best match</span>' if i == 0 else ""}</div></div>
-                    <div class="rev">Steam reviews <b>{g.rating:.0f}% positive</b>{bar(g.rating)}
-                    {f"{short(n_rev)} total" if pd.notna(n_rev) else ""}</div></div>
+                    <div>{'<span class="badge">Best match</span>' if i == 0 else ""}</div></div>
+                    <div class="rev">{rev}</div></div>
                     {f'<div class="shots">{strip}</div>' if strip else ""}
                     <div class="lbl">Match receipt</div>
                     <div class="receipt">
-                    <div><div class="lbl"><span>Tags you play</span><b>{len(shared)} shared</b></div>
-                    {chips(shared[:6], True) or '<span class="why">None of your tags</span>'}</div>
-                    <div><div class="lbl"><span>New to you</span></div>
-                    {chips(fresh[:6]) or '<span class="why">Nothing new here</span>'}</div>
-                    <div><div class="lbl"><span>Price</span><b>{round(pm * 100)}% fit</b></div>
-                    <span class="chip sel">{fmt(g.price)}</span><span class="why"> you usually pay about {fmt(round(P['avg_price'], 2))}</span></div>
-                    <div><div class="lbl"><span>Play modes</span><b>{round(mf * 100)}% fit</b></div>{modes}</div>
+                    <div><div class="lbl"><span>Because you played</span></div>
+                    {chips(c["because"], True) or '<span class="why">Your library as a whole</span>'}</div>
+                    <div><div class="lbl"><span>Tags</span><b>{len(mine)} you play</b></div>
+                    {chips(mine, True)}{chips(fresh) if fresh else ""}{'' if c["tags"] else '<span class="why">No tags</span>'}</div>
+                    <div><div class="lbl"><span>Price</span></div>{price_html(c)}</div>
+                    <div><div class="lbl"><span>Safe check</span><b>{len(flags)} flag{"" if len(flags) == 1 else "s"}</b></div>
+                    {chips(flags) or '<span class="chip sel">✅ No flags</span>'}</div>
                     </div></div>""")
-                    with st.expander("Expand analysis"):
-                        html(analysis_html(score, [("Genre fit", gm, w_g * .8), ("Price fit", pm, (1 - w_g) * .8),
-                                                   ("Play mode fit", mf, .1),
-                                                   ("Review quality", min(1, max(0, (g.rating - 70) / 30)), .1)]))
-                        st.button(f"📊  See full stats for {g['name']}  →", key=f"view_{aid}", use_container_width=True,
-                                  on_click=open_game, args=(aid, dict(score=score, gm=gm, pm=pm, mf=mf, best=best)))
+                    with st.expander("Why this pick"):
+                        html(analysis_html(c))
+                        st.button(f"📊  See full stats for {c['title']}  →", key=f"view_{aid}", use_container_width=True,
+                                  on_click=open_game, args=(aid, dict(rank=i + 1, because=c["because"], flags=flags)))
 
 # ----- Compare -----
 YOU_C, THEM_C = "var(--accent)", "#b48cff"
@@ -833,13 +840,13 @@ def taste_match(a, b):
     return dot / (na * nb) if na and nb else 0
 
 
-def rec_list(rows, other_ids, who):
+def rec_list(cards, other_ids, who):
+    """One player's EASE-safe picks (card dicts), flagging the ones the other player also got."""
     out = ""
-    for score, gm, pm, best, g, mf in rows:
-        both = g.name in other_ids
-        tag = '<span class="chip sel">for both of you</span>' if both else ""
-        out += (f'<div class="todo"><span>{g["name"]} {tag}</span>'
-                f'<span>{round(score * 100)}% · {fmt(g.price)}</span></div>')
+    for i, c in enumerate(cards or []):
+        tag = '<span class="chip sel">for both of you</span>' if c["app_id"] in other_ids else ""
+        out += (f'<div class="todo"><span>#{i + 1} {escape(c["title"])} {tag}</span>'
+                f'<span>{escape(c["price_text"] or "")}</span></div>')
     return f'<div class="card"><h2>{who}</h2>{out or "<div class=why>No recommendations.</div>"}</div>'
 
 
@@ -918,14 +925,17 @@ with tabs[2]:
                 html(fav_list(f"{rv['name']}'s favorites you don't own", them, owned))
             with d:
                 html(fav_list(f"Your favorites {rv['name']} doesn't own", played, their_owned))
-            mine = recommend(G, P, owned, 70, 999, n=8)
-            theirs = recommend(G, P2, their_owned, 70, 999, n=8)
-            mine_ids, their_ids = {r[4].name for r in mine}, {r[4].name for r in theirs}
-            c, d = st.columns(2)
-            with c:
-                html(rec_list(mine, their_ids, "Recommended for you"))
-            with d:
-                html(rec_list(theirs, mine_ids, f"Recommended for {rv['name']}"))
+            if EASE_MISSING:
+                html(MISSING_HTML)
+            else:
+                mine = recommend(owned, n=8) or []
+                theirs = recommend(rv.get("hours") or {g: them.get(g, 0) for g in their_owned}, n=8) or []
+                mine_ids, their_ids = {c["app_id"] for c in mine}, {c["app_id"] for c in theirs}
+                c, d = st.columns(2)
+                with c:
+                    html(rec_list(mine, their_ids, "Recommended for you"))
+                with d:
+                    html(rec_list(theirs, mine_ids, f"Recommended for {rv['name']}"))
             html(f'<div class="note">{rv["name"]}: {rv["n_played"]} played of {rv["n_owned"]} owned; compared on their '
-                 f'{len(them)} catalog games with {MIN_HOURS:g}+ hours. Recommendations use the default 70% genre / 30% price mix and '
-                 f'no budget limit.</div>')
+                 f'{len(them)} catalog games with {MIN_HOURS:g}+ hours. Recommendations come from the EASE-safe model '
+                 f'over each full library, with no budget limit.</div>')

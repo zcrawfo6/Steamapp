@@ -1,0 +1,7 @@
+{
+  "a_quit": 0.5,
+  "b_short": 1.0,
+  "c_negative": 10.0,
+  "chosen_on": "75_25",
+  "rule": "lowest any-flag share with NDCG@10 >= 98% of plain EASE"
+}

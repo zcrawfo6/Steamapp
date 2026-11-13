@@ -1,6 +1,7 @@
 # TasteForge - Steam Game Recommender Dashboard
 
 Team 3 Billion (DTSC 3602). Streamlit dashboard over a Supabase (Postgres) database of ~125k Steam games, served through a Modal API.
+Recommendations come from Juan's **EASE-safe** collaborative-filtering model (`ease/`, see `ease/README.md`).
 
 ## Architecture
 Kaggle Steam games CSV -> `upload_to_supabase.py` -> Supabase `games` table -> `modal_app.py` (read-only query endpoint) -> `app.py` (Streamlit)
@@ -10,7 +11,8 @@ Kaggle Steam games CSV -> `upload_to_supabase.py` -> Supabase `games` table -> `
 2. `pip install -r requirements.txt`
 3. Create `.streamlit/secrets.toml` containing: `MODAL_API_URL = "https://zcrawfo6--steam-games-api-query.us-east.modal.run"`
 4. Optional, for **Import from Steam**: get a Steam Web API key at https://steamcommunity.com/dev/apikey and add `STEAM_API_KEY = "..."` to the same `secrets.toml`
-5. `streamlit run app.py`
+5. Put the EASE-safe model files in `ease/artifacts/` (or set `EASE_DATA_DIR`); see `ease/README.md`
+6. `streamlit run app.py`
 
 ## Import from Steam
 Click **Sign in through Steam** in the sidebar. Steam's own login page (OpenID) sends you back with your Steam ID, which the app verifies with Steam, then it pulls your library with `GetOwnedGames` (`steam_import.py`) and loads your most-played games that are in the catalog (up to 40) with their lifetime hours. The app never sees your Steam password. Your profile's "Game details" must be public.

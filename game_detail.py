@@ -75,9 +75,12 @@ def csv_tags() -> dict:
 def _why_html(why: dict | None) -> str:
     if not why:
         return ""
-    return (f'<div class="why" style="margin-top:10px"><b>Why it was recommended:</b> {round(why["score"] * 100)}% match · '
-            f'genre fit {round(why["gm"] * 100)}% (you play lots of <b>{escape(str(why["best"]))}</b>) · '
-            f'price fit {round(why["pm"] * 100)}% · play-style fit {round(why["mf"] * 100)}%</div>')
+    # `why` comes from the EASE-safe recommender (app.py): rank, the played games behind the pick, soft-fail flags
+    because = ", ".join(f"<b>{escape(str(t))}</b>" for t in why.get("because", []))
+    flags = why.get("flags") or []
+    return (f'<div class="why" style="margin-top:10px"><b>Why it was recommended:</b> pick #{why["rank"]} for you'
+            + (f' · players who played {because} went on to play this' if because else "")
+            + (f' · flagged: {escape(", ".join(flags))}' if flags else " · no soft-fail flags") + '</div>')
 
 
 def _show_basic(g, why: dict | None):
