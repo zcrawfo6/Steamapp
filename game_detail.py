@@ -65,6 +65,41 @@ def load_full() -> pd.DataFrame:
     return d.set_index("app_id", drop=False)
 
 
+def csv_tags() -> dict:
+    """app_id -> tag list from games_slim.csv, used to fill in games whose tags are sparse in the full catalog."""
+    d = load_full()
+    d = d[d.tags.notna() & (d.tags != "")]
+    return {int(a): [t.strip() for t in tags.split(",") if t.strip()] for a, tags in zip(d.app_id, d.tags)}
+
+
+def _why_html(why: dict | None) -> str:
+    if not why:
+        return ""
+    return (f'<div class="why" style="margin-top:10px"><b>Why it was recommended:</b> {round(why["score"] * 100)}% match · '
+            f'genre fit {round(why["gm"] * 100)}% (you play lots of <b>{escape(str(why["best"]))}</b>) · '
+            f'price fit {round(why["pm"] * 100)}% · play-style fit {round(why["mf"] * 100)}%</div>')
+
+
+def _show_basic(g, why: dict | None):
+    """Stats page for a game that is in the full Steam catalog but not in games_slim.csv: what the catalog has."""
+    tags = list(g.genres)
+    world = T.theme_for(tags)
+    chips = "".join(f'<span class="chip sel">{escape(t)}</span>' for t in tags[:14]) or '<span class="why">No tags in the data</span>'
+    fact = f'<span class="fact"><b>Released</b> {escape(str(g.release_date or "n/a"))}</span>'
+    _html(CSS + f'<div class="catcard" style="{T.card_vars(world)}">{T.scene_html(world, escape(g["name"]), 16)}'
+          f'<div class="cbody"><div>{chips}</div><div style="margin-top:8px">{fact}</div>{_why_html(why)}</div></div>')
+    price = "Free" if g.price == 0 else f"${g.price:.2f}"
+    _html(f"""<div class="kpi"><div><b>{g.rating:.0f}%</b><span>positive reviews</span></div>
+    <div><b>{num(g.reviews)}</b><span>total reviews</span></div>
+    <div><b>{price}</b><span>price</span></div></div>""")
+    _html(f"""<div class="card"><h2>Player reviews</h2>
+    <div class="gd-big">{review_label(g.rating, int(g.reviews))}</div>
+    <div class="why" style="margin:4px 0 12px">{g.rating:.0f}% of {int(g.reviews):,} reviews are positive</div>
+    <div class="split"><i class="pos" style="width:{g.rating:.1f}%"></i><i class="neg" style="width:{100 - g.rating:.1f}%"></i></div>
+    <div class="note">This game is in the full Steam catalog but not in games_slim.csv, so developer, playtime, owner and
+    genre-ranking stats aren't available for it.</div></div>""")
+
+
 @st.cache_resource
 def _reviewed() -> pd.DataFrame:
     d = load_full()
@@ -121,11 +156,15 @@ def _delta(v: float, avg) -> str:
     return f'<span class="{"up" if r >= 1 else "down"}">{txt}</span>'
 
 
-def show(app_id: int, why: dict | None, on_back):
-    """Render the detail view in place. `why` is the recommender's breakdown for this game (or None)."""
+def show(app_id: int, why: dict | None, on_back, basic=None):
+    """Render the detail view in place. `why` is the recommender's breakdown for this game (or None).
+    `basic` is the game's catalog row, shown on its own when the game is not in games_slim.csv."""
     st.button("← Back to recommendations", on_click=on_back, key="gd_back")
     if not has(app_id):
-        st.warning("That game is not in the cleaned dataset.")
+        if basic is not None:
+            _show_basic(basic, why)
+        else:
+            st.warning("That game is not in the cleaned dataset.")
         return
     g = load_full().loc[app_id]
     tags = tags_of(app_id)
@@ -149,11 +188,7 @@ def show(app_id: int, why: dict | None, on_back):
     if g.discount:
         facts.append(f"<b>On sale</b> {g.discount}% off")
     fact_html = "".join(f'<span class="fact">{f}</span>' for f in facts)
-    why_html = ""
-    if why:
-        why_html = (f'<div class="why" style="margin-top:10px"><b>Why it was recommended:</b> {round(why["score"] * 100)}% match · '
-                    f'genre fit {round(why["gm"] * 100)}% (you play lots of <b>{escape(str(why["best"]))}</b>) · '
-                    f'price fit {round(why["pm"] * 100)}% · play-style fit {round(why["mf"] * 100)}%</div>')
+    why_html = _why_html(why)
     _html(CSS + f'<div class="catcard" style="{T.card_vars(world)}">{T.scene_html(world, escape(name_of(app_id)), 16)}'
           f'<div class="cbody"><div>{chips}</div><div style="margin-top:8px">{fact_html}</div>{why_html}</div></div>')
 
