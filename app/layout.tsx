@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { Analytics } from "@vercel/analytics/next";
 import TopBar from "@/components/TopBar";
 import { FONT_URL, shelfUri } from "@/lib/themes";
 import { StoreProvider } from "@/lib/store";
@@ -25,6 +26,7 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
             {children}
           </div>
         </StoreProvider>
+        <Analytics />
       </body>
     </html>
   );

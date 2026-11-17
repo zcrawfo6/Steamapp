@@ -228,3 +228,13 @@ svg text { fill: var(--text); font-size: 11px; }
   .receipt, .ana, .grid2, .mygames { grid-template-columns: 1fr; }
   .hero { margin-top: 4vh; }
 }
+
+/* Sign in through Steam (official button) + demo banner */
+.steam-login { display: inline-flex; border-radius: 4px; line-height: 0; transition: filter .15s, transform .15s; }
+.steam-login:hover { filter: brightness(1.15); transform: translateY(-1px); }
+.steam-login:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.steam-primary { display: flex; justify-content: center; margin-bottom: 4px; }
+.or { display: flex; align-items: center; gap: 10px; margin: 10px 0; font-size: 12px; color: var(--mute); }
+.or::before, .or::after { content: ""; flex: 1; height: 1px; background: var(--line); }
+.demo-banner { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.demo-banner .btn { padding: 6px 14px; }

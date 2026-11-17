@@ -65,31 +65,42 @@ export function useSteamImport() {
   return { run, busy, msg };
 }
 
+/** Steam's official "Sign in through Steam" button. Plain link so Steam returns to this tab. */
+export function SteamSignIn() {
+  return (
+    <a href="/api/auth/steam" className="steam-login" title="Sign in through Steam to import your library">
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img src="https://community.fastly.steamstatic.com/public/images/signinthroughsteam/sits_01.png" alt="Sign in through Steam" width={180} height={35} />
+    </a>
+  );
+}
+
 function SteamImport() {
   const [q, setQ] = useState("");
   const { run, busy, msg } = useSteamImport();
   return (
     <>
+      <div className="steam-primary">
+        <SteamSignIn />
+      </div>
+      <div className="or">or paste your profile link</div>
       <form
         onSubmit={(e) => {
           e.preventDefault();
           run(q);
         }}
       >
-        <label className="lbl" htmlFor="steam-q">
-          Your Steam profile
-        </label>
-        <input id="steam-q" className="input" style={{ margin: "6px 0 10px" }} value={q} onChange={(e) => setQ(e.target.value)}
+        <input id="steam-q" aria-label="Your Steam profile" className="input" style={{ margin: "0 0 10px" }} value={q} onChange={(e) => setQ(e.target.value)}
           placeholder="Custom URL name, profile URL or SteamID64" autoComplete="off" />
-        <button className="btn block" disabled={busy}>
+        <button className="btn ghost block" disabled={busy}>
           {busy ? "Importing..." : "Import my library"}
         </button>
       </form>
       {msg && <Msg kind={msg[0]}>{msg[1]}</Msg>}
       <p style={{ marginTop: 10 }}>
         Your Steam profile and its Game details must be set to Public. Every owned game that&apos;s in the catalog is imported
-        with its lifetime hours; games under {MIN_HOURS} hours don&apos;t count toward your taste profile. Your Steam ID is
-        only used for this lookup and isn&apos;t stored.
+        with its lifetime hours; games under {MIN_HOURS} hours don&apos;t count toward your taste profile. Signing in only
+        tells this site your Steam ID (never your password), and it&apos;s only used for this lookup and isn&apos;t stored.
       </p>
     </>
   );

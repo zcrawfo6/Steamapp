@@ -12,7 +12,8 @@ The browser only talks to this site. The Modal URL and its bearer token stay on 
 That route only forwards a fixed list of paths.
 
 ## Features
-- **Recommendations**: search games and add them, or import a public Steam library, or try a demo profile. You get the
+- **Recommendations**: first-time visitors see a demo profile loaded automatically (with a "Start fresh" banner). Sign
+  in through Steam (OpenID, `app/api/auth/steam/*`, nothing stored), paste a profile link, or search games and add them. You get the
   EASE-safe "For you" picks plus "Try something new". Each pick shows a match receipt (because you played, tags, price,
   soft-fail flags), screenshots, a "Why this pick" breakdown, and budget presets.
 - **Player Profile**: genre radar, where your hours go, price comfort zone, play style (story / co-op / PvP),
@@ -44,6 +45,7 @@ npm run dev        # http://localhost:3000
 | `app/game/[appid]/` + `components/GameView.tsx` | Game stats page |
 | `app/api/m/[...path]/route.ts` | Proxy to Modal (adds the token) |
 | `app/api/shots/route.ts` | Steam store screenshots |
+| `app/api/auth/steam/` + `lib/steamAuth.ts` | Sign in through Steam (OpenID redirect + signature check) |
 | `lib/themes.ts` | Worlds, skylines, particles, shelf backdrop (port of `themes.py`) |
 | `lib/profile.ts` | Profile math (port of `app.py`'s `profile`, `modes_for`, `taste_match`) |
 | `lib/store.tsx` | Library and settings state (localStorage) |
