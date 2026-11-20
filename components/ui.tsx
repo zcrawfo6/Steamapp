@@ -5,10 +5,10 @@ import { THEMES, cardVars, hash, particles, skyUri } from "@/lib/themes";
 export function Mark() {
   return (
     <svg viewBox="0 0 64 44" aria-hidden="true">
-      <path d="M17 4h30c9 0 15 9 16 22 1 10-3 16-9 16-4 0-7-3-10-8H20c-3 5-6 8-10 8-6 0-10-6-9-16C2 13 8 4 17 4z" fill="#1b374a" stroke="#b8e6fe" strokeWidth="2.5" />
-      <path d="M15 20h4v-4h4v4h4v4h-4v4h-4v-4h-4z" fill="#b8e6fe" />
-      <circle cx="44" cy="18" r="3" fill="#7dd3fc" />
-      <circle cx="50" cy="25" r="3" fill="#b8e6fe" />
+      <path d="M17 4h30c9 0 15 9 16 22 1 10-3 16-9 16-4 0-7-3-10-8H20c-3 5-6 8-10 8-6 0-10-6-9-16C2 13 8 4 17 4z" fill="#26282c" stroke="#ff5a1f" strokeWidth="2.5" />
+      <path d="M15 20h4v-4h4v4h4v4h-4v4h-4v-4h-4z" fill="#ff5a1f" />
+      <circle cx="44" cy="18" r="3" fill="#ffb000" />
+      <circle cx="50" cy="25" r="3" fill="#ff5a1f" />
     </svg>
   );
 }
@@ -100,7 +100,7 @@ export function WorldCard({ world, title, children }: { world: string; title: st
         ))}
         <div className="ttl">
           <div className="realm">
-            {t.icon} {t.name}
+            {t.name}
           </div>
           <h3>{title}</h3>
         </div>

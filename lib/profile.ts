@@ -4,10 +4,10 @@ import type { GameSummary, LibGame, Mode } from "./types";
 /** Games with fewer hours stay in the library (never recommended) but don't shape the taste profile. */
 export const MIN_HOURS = 2.5;
 
-export const MODES: Record<Mode, [string, string]> = {
-  story: ["📖", "Story / Campaign"],
-  coop: ["🤝", "Co-op (PvE)"],
-  pvp: ["⚔️", "PvP"],
+export const MODES: Record<Mode, string> = {
+  story: "Story / Campaign",
+  coop: "Co-op (PvE)",
+  pvp: "PvP",
 };
 const STORY_T = new Set(["story rich", "singleplayer", "choices matter", "multiple endings", "visual novel",
   "interactive fiction", "rpg", "jrpg", "adventure", "action-adventure", "walking simulator"]);

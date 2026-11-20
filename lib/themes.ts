@@ -15,7 +15,6 @@ type Palette = { bg: string; panel: string; panel2: string; line: string; text: 
 type PartKind = "ember" | "pixel" | "ash" | "stars" | "rain" | "petal" | "firefly" | "streak" | "fog";
 export type World = {
   name: string;
-  icon: string;
   tag: string;
   disp: string;
   body: string;
@@ -31,76 +30,76 @@ export const DEFAULT = "forge";
 
 export const THEMES: Record<string, World> = {
   forge: {
-    name: "The Forge", icon: "🔥", tag: "Hammer your taste into shape.",
+    name: "The Forge", tag: "Hammer your taste into shape.",
     disp: "'Big Shoulders Display',Impact,sans-serif", body: "'DM Sans',system-ui,sans-serif",
-    c: { bg: "#100c0a", panel: "rgba(30,22,17,.82)", panel2: "rgba(48,34,25,.9)", line: "#4a3526", text: "#f3e9df", mute: "#b39a85", accent: "#ff7a2f", accent2: "#ffc857" },
-    grad: "linear-gradient(180deg,#2a140a,#6a2c0e)", sil: "#0c0605", skyk: "foundry", part: ["ember", "#ffb347", 26], tags: {},
+    c: { bg: "#0e0f11", panel: "rgba(26,28,31,.86)", panel2: "rgba(38,40,44,.92)", line: "#45484e", text: "#ece8e4", mute: "#9a958f", accent: "#ff5a1f", accent2: "#ffb000" },
+    grad: "linear-gradient(180deg,#111214,#5a210b)", sil: "#08090a", skyk: "foundry", part: ["ember", "#ffb000", 26], tags: {},
   },
   medieval: {
-    name: "Age of Steel", icon: "⚔️", tag: "Torchlight, stone halls and sharpened steel.",
+    name: "Age of Steel", tag: "Torchlight, stone halls and sharpened steel.",
     disp: "'Cinzel',Georgia,serif", body: "'EB Garamond',Georgia,serif",
     c: { bg: "#12100c", panel: "rgba(30,24,17,.84)", panel2: "rgba(46,37,25,.92)", line: "#5a4a2c", text: "#efe6d2", mute: "#b3a381", accent: "#d0584a", accent2: "#f0c75e" },
     grad: "linear-gradient(180deg,#1d1a2a,#6b3b1a)", sil: "#080604", skyk: "castle", part: ["ember", "#ffa94d", 26],
     tags: { medieval: 3, "dark fantasy": 2.5, fantasy: 1.5, "souls-like": 2, historical: 1.5, "hack and slash": 1, "dungeon crawler": 1.5, "party-based rpg": 1, "tactical rpg": 1, swordplay: 2, "grand strategy": 1 },
   },
   cyber: {
-    name: "Neon Sprawl", icon: "🌃", tag: "Neon rain. Chrome nerves. Static in the sky.",
+    name: "Neon Sprawl", tag: "Neon rain. Chrome nerves. Static in the sky.",
     disp: "'Orbitron',sans-serif", body: "'Rajdhani',sans-serif",
     c: { bg: "#07050f", panel: "rgba(14,10,32,.8)", panel2: "rgba(28,18,58,.9)", line: "#3a2a7a", text: "#e8f3ff", mute: "#8f9bd6", accent: "#00e5ff", accent2: "#ff2bd6" },
     grad: "linear-gradient(180deg,#1a0838,#5c1670)", sil: "#06030f", skyk: "neon", part: ["rain", "#5ff3ff", 46],
     tags: { cyberpunk: 3, robots: 1.5, mechs: 1.2, "immersive sim": 1, futuristic: 2, transhumanism: 2, hacking: 2, "sci-fi": 0.8 },
   },
   space: {
-    name: "Deep Void", icon: "🪐", tag: "Silence, starlight and a long way from home.",
+    name: "Deep Void", tag: "Silence, starlight and a long way from home.",
     disp: "'Audiowide',sans-serif", body: "'Exo 2',sans-serif",
     c: { bg: "#05070f", panel: "rgba(10,16,36,.8)", panel2: "rgba(20,28,62,.9)", line: "#28407a", text: "#e6eeff", mute: "#8da2d6", accent: "#7aa2ff", accent2: "#b388ff" },
     grad: "linear-gradient(180deg,#05061a,#2a1a6a)", sil: "#040612", skyk: "peaks", part: ["stars", "#dfe8ff", 70],
     tags: { "sci-fi": 2, space: 3, "4x": 1.5, flight: 1, "space sim": 3, aliens: 2, "colony sim": 0.5, futuristic: 0.5 },
   },
   horror: {
-    name: "The Haunting", icon: "🕯️", tag: "Something is watching. Keep playing.",
+    name: "The Haunting", tag: "Something is watching. Keep playing.",
     disp: "'Creepster',cursive", body: "'Lora',Georgia,serif",
     c: { bg: "#0b0809", panel: "rgba(22,12,14,.84)", panel2: "rgba(40,18,22,.92)", line: "#4d1d22", text: "#eadcd8", mute: "#a58a86", accent: "#c0242f", accent2: "#e0cfa8" },
     grad: "linear-gradient(180deg,#1a0508,#4a0f16)", sil: "#050304", skyk: "tombs", part: ["fog", "#8c7f86", 7],
     tags: { horror: 3, "psychological horror": 3, "survival horror": 3, zombies: 2, gore: 1.5, lovecraftian: 3, dark: 1.2, thriller: 1.5, supernatural: 2, atmospheric: 0.3 },
   },
   cozy: {
-    name: "Lantern Hollow", icon: "🏡", tag: "Warm lanterns, soft light, no rush.",
+    name: "Lantern Hollow", tag: "Warm lanterns, soft light, no rush.",
     disp: "'Fredoka',sans-serif", body: "'Nunito',sans-serif",
     c: { bg: "#17131f", panel: "rgba(36,28,50,.8)", panel2: "rgba(54,42,72,.9)", line: "#5a4a78", text: "#f6ecf5", mute: "#b9a6c9", accent: "#ff9eb5", accent2: "#ffd98a" },
     grad: "linear-gradient(180deg,#2a2050,#e07a6a)", sil: "#120d1c", skyk: "hills", part: ["firefly", "#ffe38a", 22],
     tags: { cozy: 3, "farming sim": 2.5, relaxing: 2.5, cute: 2, "life sim": 2, casual: 1, "family friendly": 1.5, wholesome: 3, crafting: 0.4, building: 0.4 },
   },
   retro: {
-    name: "Arcade Wave", icon: "👾", tag: "Insert coin. High scores forever.",
+    name: "Arcade Wave", tag: "Insert coin. High scores forever.",
     disp: "'Press Start 2P',monospace", body: "'Space Mono',monospace",
     c: { bg: "#0d0221", panel: "rgba(26,8,52,.82)", panel2: "rgba(44,14,84,.9)", line: "#5b2a9e", text: "#fdf1ff", mute: "#c19be0", accent: "#ff4fa3", accent2: "#3df5ff" },
     grad: "linear-gradient(180deg,#1a0540,#ff4fa3)", sil: "#14052e", skyk: "pixel", part: ["pixel", "#3df5ff", 30],
     tags: { "pixel graphics": 2, retro: 3, arcade: 3, classic: 1.5, platformer: 1.2, "shoot 'em up": 2, "bullet hell": 2, "2d platformer": 1.5, "side scroller": 1, "beat 'em up": 1.5, rhythm: 1.5, metroidvania: 1, pinball: 2 },
   },
   war: {
-    name: "Ashfall", icon: "🪖", tag: "Smoke on the horizon. Hold the line.",
+    name: "Ashfall", tag: "Smoke on the horizon. Hold the line.",
     disp: "'Black Ops One',sans-serif", body: "'Saira Condensed',sans-serif",
     c: { bg: "#0e100c", panel: "rgba(24,27,20,.84)", panel2: "rgba(38,43,30,.92)", line: "#4a5238", text: "#e4e6d8", mute: "#9ea58a", accent: "#9aa84a", accent2: "#e0a030" },
     grad: "linear-gradient(180deg,#2a2a1a,#8a5a20)", sil: "#080905", skyk: "ruins", part: ["ash", "#b9b9a8", 34],
     tags: { "post-apocalyptic": 3, war: 3, "world war ii": 3, military: 2.5, wargame: 2.5, survival: 0.8, "open world survival craft": 0.8, tactical: 1, fps: 0.5, shooter: 0.4, "real time tactics": 1.5, "turn-based tactics": 1 },
   },
   anime: {
-    name: "Sakura Dreams", icon: "🌸", tag: "Petals drift. Every story is a love letter.",
+    name: "Sakura Dreams", tag: "Petals drift. Every story is a love letter.",
     disp: "'Mochiy Pop One',sans-serif", body: "'Zen Maru Gothic',sans-serif",
     c: { bg: "#1a1020", panel: "rgba(42,24,54,.8)", panel2: "rgba(62,36,78,.9)", line: "#7a4a96", text: "#fff0f8", mute: "#d3a9d9", accent: "#ff7fb0", accent2: "#8fd7ff" },
     grad: "linear-gradient(180deg,#3a2060,#ff9cc6)", sil: "#1a0f24", skyk: "fuji", part: ["petal", "#ffb7d5", 26],
     tags: { anime: 3, "visual novel": 2.5, "dating sim": 2.5, romance: 2, jrpg: 2, manga: 3, otome: 3, "female protagonist": 0.3 },
   },
   racing: {
-    name: "Redline", icon: "🏁", tag: "Redline everything.",
+    name: "Redline", tag: "Redline everything.",
     disp: "'Russo One',sans-serif", body: "'Chakra Petch',sans-serif",
     c: { bg: "#0a0c10", panel: "rgba(18,22,30,.84)", panel2: "rgba(30,36,50,.92)", line: "#3a4660", text: "#f0f4fa", mute: "#98a6c0", accent: "#ff3b30", accent2: "#ffd60a" },
     grad: "linear-gradient(180deg,#10141c,#b8281f)", sil: "#07090d", skyk: "road", part: ["streak", "#ffd60a", 18],
     tags: { racing: 3, driving: 2.5, sports: 1.5, "automobile sim": 3, parkour: 1, "fast-paced": 0.8, football: 2, basketball: 2, soccer: 2 },
   },
   noir: {
-    name: "Midnight Case", icon: "🕵️", tag: "Rain on the glass. Every case has a secret.",
+    name: "Midnight Case", tag: "Rain on the glass. Every case has a secret.",
     disp: "'Playfair Display',Georgia,serif", body: "'Libre Franklin',sans-serif",
     c: { bg: "#0c0c0e", panel: "rgba(22,22,26,.84)", panel2: "rgba(36,36,42,.92)", line: "#46464f", text: "#ece8df", mute: "#a09c92", accent: "#9a9aa6", accent2: "#e5c07b" },
     grad: "linear-gradient(180deg,#141416,#3c3c44)", sil: "#060607", skyk: "noir", part: ["rain", "#a8a8b4", 40],
@@ -372,45 +371,4 @@ export function particles(kind: PartKind, n: number, seed: number, mini = false)
 export function cardVars(key: string): Record<string, string> {
   const t = THEMES[key];
   return { "--ca": t.c.accent, "--ca2": t.c.accent2, "--cl": t.c.line, "--cp": t.c.panel2, "--cd": t.disp, "--cb": t.body };
-}
-
-// ---------------------------------------------------------------- page backdrop: a wall of game shelves
-const SPINES = ["#1e7a3c", "#15692f", "#1e7a3c", "#121417", "#1b1e22", "#121417", "#1a4f9c", "#22468a",
-  "#d8d8d2", "#9b1c22", "#c4232b", "#4b2d73", "#c9a227", "#1d6f74", "#4a5058"];
-
-let shelfCache = "";
-export function shelfUri(): string {
-  if (shelfCache) return shelfCache;
-  const r = rng(17);
-  const W = 1200;
-  const ROW = 250;
-  const o = [`<rect width="${W}" height="${ROW * 4}" fill="#0a1017"/>`];
-  for (let row = 0; row < 4; row++) {
-    const floor = row * ROW + ROW - 16;
-    let x = r.randint(0, 20);
-    while (x < W) {
-      const col = r.choice(SPINES);
-      if (r.random() < 0.05) {
-        const w = r.randint(110, 140);
-        const h = r.randint(160, 190);
-        o.push(`<rect x="${x}" y="${floor - h}" width="${w}" height="${h}" rx="3" fill="${col}"/>` +
-          `<rect x="${x + 6}" y="${floor - h + 24}" width="${w - 12}" height="${h - 32}" fill="${r.choice(SPINES)}" opacity=".75"/>` +
-          `<rect x="${x}" y="${floor - h}" width="${w}" height="16" fill="#fff" opacity=".18"/>`);
-        x += w + r.randint(4, 10);
-        continue;
-      }
-      if (r.random() < 0.03) {
-        x += r.randint(20, 50);
-        continue;
-      }
-      const w = r.randint(10, 18);
-      const h = r.randint(178, 206);
-      o.push(`<rect x="${x}" y="${floor - h}" width="${w}" height="${h}" fill="${col}"/>` +
-        `<rect x="${x + 2}" y="${floor - h + r.randint(14, 40)}" width="${w - 4}" height="${r.randint(50, 110)}" fill="#fff" opacity=".${r.randint(10, 22)}"/>`);
-      x += w + 1;
-    }
-    o.push(`<rect x="0" y="${floor}" width="${W}" height="16" fill="#34404c"/><rect x="0" y="${floor}" width="${W}" height="3" fill="#56636f"/>`);
-  }
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${ROW * 4}" preserveAspectRatio="xMidYMid slice">${o.join("")}</svg>`;
-  return (shelfCache = `url("data:image/svg+xml;utf8,${encodeURIComponent(svg)}")`);
 }

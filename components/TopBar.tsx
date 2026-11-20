@@ -117,7 +117,7 @@ export default function TopBar() {
         </span>
       </Link>
       <div className="tb-right">
-        <Popover label="🎮  Import from Steam">{() => <SteamImport />}</Popover>
+        <Popover label="Import from Steam">{() => <SteamImport />}</Popover>
         <Popover label={`Mode: ${settings.mode}`} solid>
           {(close) =>
             (["Simple", "Advanced"] as const).map((m) => (

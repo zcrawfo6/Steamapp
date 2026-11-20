@@ -2,7 +2,6 @@
 // One EASE-safe pick: capsule, reviews, screenshots, the "match receipt" and the "Why this pick" analysis.
 import Link from "next/link";
 import { short, tasteTags } from "@/lib/profile";
-import { THEMES, themeFor } from "@/lib/themes";
 import type { Card } from "@/lib/types";
 import { Bar, Chips } from "./ui";
 
@@ -55,11 +54,11 @@ function Analysis({ c }: { c: Card }) {
         {c.flags.length ? (
           c.flags.map((f) => (
             <div className="why" key={f}>
-              ⚠️ <b>{FLAG_NAMES[f]}</b>: {FLAG_HELP[f]}, so it was moved down.
+              <b>{FLAG_NAMES[f]}</b>: {FLAG_HELP[f]}, so it was moved down.
             </div>
           ))
         ) : (
-          <div className="why">✅ No soft-fail flags: not like the games you quit, not a 2-hour game, and not negatively reviewed.</div>
+          <div className="why">No soft-fail flags: not like the games you quit, not a 2-hour game, and not negatively reviewed.</div>
         )}
       </div>
     </div>
@@ -76,7 +75,6 @@ export function detailHref(c: Card, rank: number) {
 export default function RecCard({ c, rank, aff, shots, fresh }: { c: Card; rank: number; aff: Record<string, number>; shots?: string[]; fresh?: boolean }) {
   // same tag source as the profile (full user tags minus format tags), so "you play" lines up with your profile
   const tags = tasteTags(c);
-  const world = THEMES[themeFor(c.raw_tags?.length ? c.raw_tags : tags)];
   const mine = tags.filter((t) => t in aff);
   const other = tags.filter((t) => !(t in aff));
   const flags = c.flags.map((f) => FLAG_NAMES[f]);
@@ -91,9 +89,6 @@ export default function RecCard({ c, rank, aff, shots, fresh }: { c: Card; rank:
                 {c.title}
               </a>
               <span className="pct">#{rank} {fresh ? "new direction" : "pick"}</span>
-              <span className="mi" title={world.name}>
-                {world.icon}
-              </span>
             </h3>
             <div>
               {rank === 1 && !fresh && <span className="badge">Best match</span>}
@@ -150,7 +145,7 @@ export default function RecCard({ c, rank, aff, shots, fresh }: { c: Card; rank:
                 {flags.length} flag{flags.length === 1 ? "" : "s"}
               </b>
             </div>
-            {flags.length ? <Chips items={flags} /> : <span className="chip sel">✅ No flags</span>}
+            {flags.length ? <Chips items={flags} /> : <span className="chip sel">No flags</span>}
           </div>
         </div>
       </div>
@@ -158,7 +153,7 @@ export default function RecCard({ c, rank, aff, shots, fresh }: { c: Card; rank:
         <summary>Why this pick</summary>
         <Analysis c={c} />
         <Link className="viewlink" href={detailHref(c, rank)}>
-          📊 See full stats for {c.title} →
+          See full stats for {c.title} →
         </Link>
       </details>
     </div>

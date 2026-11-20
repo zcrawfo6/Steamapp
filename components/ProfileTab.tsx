@@ -25,7 +25,7 @@ export default function ProfileTab() {
   const arche = `${top[0]?.[0] ?? ""} ${ap < 15 ? "Bargain Hunter" : ap < 35 ? "Value Seeker" : "Premium Collector"}`;
   const modes = Object.entries(P.modes) as [Mode, number][];
   const th = modes.reduce((s, [, h]) => s + h, 0);
-  const mainMode = modes.length ? MODES[modes.sort((a, b) => b[1] - a[1])[0][0]][1].split(" ")[0] : "—";
+  const mainMode = modes.length ? MODES[modes.sort((a, b) => b[1] - a[1])[0][0]].split(" ")[0] : "—";
   const big = [...played].sort((a, b) => b.hours - a.hours).slice(0, 5);
   const [world, drivers] = themeForLibrary(played.map((g) => [g.title, tasteTags(g).concat(g.raw_tags ?? []), g.hours]));
   const w = THEMES[world];
@@ -39,7 +39,7 @@ export default function ProfileTab() {
         <div><b>{mainMode}</b><span>main mode</span></div>
         <div><b style={{ fontSize: 16 }}>{arche}</b><span>your archetype</span></div>
         <div title={drivers.length ? `Decided by ${drivers.join(", ")}` : undefined}>
-          <b style={{ fontSize: 16 }}>{w.icon} {w.name}</b><span>your world</span>
+          <b style={{ fontSize: 16 }}>{w.name}</b><span>your world</span>
         </div>
       </div>
       <div className="grid2">
@@ -73,7 +73,7 @@ export default function ProfileTab() {
               P.modes[m] ? (
                 <div className="mode" key={m}>
                   <div className="mh">
-                    <span>{MODES[m][0]} {MODES[m][1]}</span>
+                    <span>{MODES[m]}</span>
                     <span>{Math.round(P.modes[m]!)}h · {Math.round((P.modes[m]! / th) * 100)}% of your time</span>
                   </div>
                   <Bar pct={(P.modes[m]! / th) * 100} />
@@ -91,7 +91,7 @@ export default function ProfileTab() {
               <span>{g.title}</span>
               <span>
                 {hrs(g.hours)}h ·{" "}
-                {(Object.entries(modeShares(g)) as [Mode, number][]).map(([m, s]) => `${MODES[m][0]} ${Math.round(s * 100)}%`).join(" ")}
+                {(Object.entries(modeShares(g)) as [Mode, number][]).map(([m, s]) => `${MODES[m].split(" ")[0]} ${Math.round(s * 100)}%`).join(" · ")}
               </span>
             </div>
           ))}

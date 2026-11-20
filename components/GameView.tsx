@@ -145,8 +145,8 @@ export default function GameView({ appId, why }: { appId: number; why: Why }) {
                 <i className="neg" style={{ width: `${(100 - pos).toFixed(1)}%` }} />
               </div>
               <div className="mh sm">
-                <span>👍 {(g.positive ?? 0).toLocaleString()} positive</span>
-                <span>👎 {(g.negative ?? 0).toLocaleString()} negative</span>
+                <span>{(g.positive ?? 0).toLocaleString()} positive</span>
+                <span>{(g.negative ?? 0).toLocaleString()} negative</span>
               </div>
             </>
           ) : (

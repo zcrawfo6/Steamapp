@@ -33,12 +33,12 @@ function GameEditor({ g }: { g: LibGame }) {
         <div className="field" key={m}>
           <label className="check" style={{ color: "var(--text)" }}>
             <input type="checkbox" checked={m in g.modes} onChange={(e) => toggle(m, e.target.checked)} />
-            {MODES[m][0]} {MODES[m][1]}
+            {MODES[m]}
           </label>
           {m in g.modes && (
             <div className="row" style={{ flexWrap: "nowrap" }} title={solo ? "Locked at 100% while this is the only mode ticked." : "Share of your hours on this game in this mode"}>
               <input type="range" min={0} max={100} disabled={solo} value={solo ? 100 : g.modes[m]}
-                aria-label={`${MODES[m][1]} share of hours`}
+                aria-label={`${MODES[m]} share of hours`}
                 onChange={(e) => update(g.app_id, { modes: { ...g.modes, [m]: Number(e.target.value) } })} />
               <span className="why" style={{ margin: 0, minWidth: 36 }}>{solo ? 100 : g.modes[m]}%</span>
             </div>

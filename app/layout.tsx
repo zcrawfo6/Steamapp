@@ -1,7 +1,8 @@
+import type { CSSProperties } from "react";
 import type { Metadata } from "next";
 import { Analytics } from "@vercel/analytics/next";
 import TopBar from "@/components/TopBar";
-import { FONT_URL, shelfUri } from "@/lib/themes";
+import { FONT_URL, particles, skyUri } from "@/lib/themes";
 import { StoreProvider } from "@/lib/store";
 import "./globals.css";
 
@@ -19,7 +20,14 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
         <link rel="stylesheet" href={FONT_URL} />
       </head>
       <body>
-        <div className="shelves" style={{ backgroundImage: shelfUri() }} aria-hidden />
+        <div className="forge-bg" aria-hidden>
+          <div className="sky" style={{ backgroundImage: skyUri("forge") }} />
+          <div className="embers" style={{ "--pc": "#ffb000" } as CSSProperties}>
+            {particles("ember", 36, 7).map((p, i) => (
+              <i key={i} style={p as CSSProperties} />
+            ))}
+          </div>
+        </div>
         <StoreProvider>
           <div className="wrap">
             <TopBar />
